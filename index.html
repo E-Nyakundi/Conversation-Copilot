@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Conversation Copilot — Audio Streaming Test</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .container {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      max-width: 600px;
+      width: 100%;
+      padding: 40px;
+    }
+
+    h1 {
+      color: #333;
+      margin-bottom: 8px;
+      font-size: 28px;
+    }
+
+    .subtitle {
+      color: #777;
+      margin-bottom: 24px;
+      font-size: 14px;
+    }
+
+    .connection-status {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      background: #f5f5f5;
+      border-radius: 8px;
+      margin-bottom: 24px;
+      font-size: 14px;
+    }
+
+    .status-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #ccc;
+      transition: all 0.3s ease;
+    }
+
+    .status-dot.connected {
+      background: #4caf50;
+      box-shadow: 0 0 8px rgba(76, 175, 80, 0.6);
+    }
+
+    .status-dot.error {
+      background: #f44336;
+      box-shadow: 0 0 8px rgba(244, 67, 54, 0.6);
+    }
+
+    #status {
+      color: #666;
+      flex: 1;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    button {
+      padding: 12px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: #667eea;
+      color: white;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: #5568d3;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    .btn-danger {
+      background: #f44336;
+      color: white;
+    }
+
+    .btn-danger:hover:not(:disabled) {
+      background: #da190b;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(244, 67, 54, 0.4);
+    }
+
+    .btn-secondary {
+      background: #757575;
+      color: white;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: #616161;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(117, 117, 117, 0.4);
+    }
+
+    .full-width {
+      grid-column: 1 / -1;
+    }
+
+    .mic-indicator {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 16px;
+      background: #f5f5f5;
+      border-radius: 8px;
+      margin-bottom: 24px;
+      font-size: 14px;
+      color: #666;
+    }
+
+    .mic-level {
+      width: 120px;
+      height: 4px;
+      background: #e0e0e0;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .mic-level-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #4caf50, #ffc107, #f44336);
+      width: 0%;
+      transition: width 0.05s ease;
+    }
+
+    .transcript {
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 16px;
+      height: 300px;
+      overflow-y: auto;
+      background: #fafafa;
+      margin-bottom: 24px;
+    }
+
+    .transcript-empty {
+      text-align: center;
+      color: #999;
+      padding: 60px 20px;
+      font-size: 14px;
+    }
+
+    .turn {
+      margin-bottom: 12px;
+      padding: 8px;
+      background: white;
+      border-left: 3px solid #667eea;
+      border-radius: 4px;
+    }
+
+    .speaker {
+      font-weight: 600;
+      color: #333;
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .speaker.user {
+      color: #667eea;
+    }
+
+    .speaker.assistant {
+      color: #764ba2;
+    }
+
+    .text {
+      color: #666;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    .confidence {
+      color: #999;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .partial {
+      font-style: italic;
+      color: #999;
+      opacity: 0.7;
+    }
+
+    .debug-section {
+      border-top: 1px solid #e0e0e0;
+      padding-top: 16px;
+      margin-top: 16px;
+      font-size: 12px;
+      color: #999;
+      max-height: 120px;
+      overflow-y: auto;
+      font-family: "Courier New", monospace;
+    }
+
+    .debug-section code {
+      display: block;
+      margin: 2px 0;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎤 Conversation Copilot</h1>
+    <p class="subtitle">Real-time speech-to-text streaming</p>
+
+    <div class="connection-status">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="status">Not connected</span>
+    </div>
+
+    <div class="controls">
+      <button class="btn-primary" id="connectBtn" onclick="connect()">
+        Connect
+      </button>
+      <button class="btn-secondary" id="startBtn" onclick="startMic()" disabled>
+        🎙️ Start
+      </button>
+      <button class="btn-danger" id="stopBtn" onclick="stopMic()" disabled>
+        ⏹ Stop
+      </button>
+      <button class="btn-secondary" id="endBtn" onclick="endSession()" disabled>
+        End Session
+      </button>
+    </div>
+
+    <div class="mic-indicator" id="micIndicator" style="display: none">
+      <span>Mic Level:</span>
+      <div class="mic-level">
+        <div class="mic-level-bar" id="micLevelBar"></div>
+      </div>
+    </div>
+
+    <div class="transcript" id="transcript">
+      <div class="transcript-empty">Transcript will appear here...</div>
+    </div>
+
+    <div class="debug-section">
+      <div id="debug"></div>
+    </div>
+  </div>
+
+  <script>
+    let ws, audioCtx, sourceNode, analyser, processorNode, mediaStream;
+    let sessionId = null;
+    let partialEl = null;
+    const TARGET_SAMPLE_RATE = 16000;
+    const debugLogs = [];
+    const MAX_DEBUG_LOGS = 10;
+
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("status");
+    const transcriptEl = document.getElementById("transcript");
+    const debugEl = document.getElementById("debug");
+    const micIndicator = document.getElementById("micIndicator");
+    const micLevelBar = document.getElementById("micLevelBar");
+
+    function addDebugLog(msg) {
+      const timestamp = new Date().toLocaleTimeString();
+      debugLogs.unshift(`[${timestamp}] ${msg}`);
+      if (debugLogs.length > MAX_DEBUG_LOGS) debugLogs.pop();
+      debugEl.innerHTML = debugLogs.map((log) => `<code>${escapeHtml(log)}</code>`).join("");
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function setStatus(msg, isConnected = null) {
+      statusText.textContent = msg;
+      if (isConnected !== null) {
+        statusDot.classList.remove("connected", "error");
+        statusDot.classList.add(isConnected ? "connected" : "error");
+      }
+    }
+
+    function connect() {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const host = window.location.host;
+      const url = `${protocol}//${host}/ws/audio/`;
+      addDebugLog(`Connecting to ${url}`);
+
+      ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => {
+        addDebugLog("WebSocket connected");
+        setStatus("Connected. Ready to record.", true);
+        document.getElementById("connectBtn").disabled = true;
+        document.getElementById("startBtn").disabled = false;
+        document.getElementById("endBtn").disabled = false;
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "session_started") {
+            sessionId = data.session_id;
+            addDebugLog(`Session started: ${sessionId}`);
+            setStatus(`Session: ${sessionId.substring(0, 8)}...`, true);
+          } else if (data.type === "partial") {
+            renderPartial(data.text);
+          } else if (data.type === "final") {
+            renderFinal(data);
+          } else if (data.type === "session_ended") {
+            addDebugLog("Session ended");
+            setStatus("Session ended", true);
+          } else if (data.type === "extraction") {
+            addDebugLog(`Extraction: ${data.items.length} item(s)`);
+          }
+        } catch (e) {
+          addDebugLog(`Error parsing message: ${e.message}`);
+        }
+      };
+
+      ws.onerror = (e) => {
+        addDebugLog(`WebSocket error`);
+        setStatus("Connection error", false);
+      };
+
+      ws.onclose = () => {
+        addDebugLog("WebSocket closed");
+        setStatus("Disconnected", false);
+        document.getElementById("connectBtn").disabled = false;
+        document.getElementById("startBtn").disabled = true;
+        document.getElementById("stopBtn").disabled = true;
+        document.getElementById("endBtn").disabled = true;
+        micIndicator.style.display = "none";
+      };
+    }
+
+    function renderPartial(text) {
+      if (!partialEl) {
+        partialEl = document.createElement("div");
+        partialEl.className = "turn partial";
+        if (transcriptEl.firstChild?.classList.contains("transcript-empty")) {
+          transcriptEl.innerHTML = "";
+        }
+        transcriptEl.appendChild(partialEl);
+      }
+      partialEl.textContent = text;
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    function renderFinal(data) {
+      if (partialEl) {
+        partialEl.remove();
+        partialEl = null;
+      }
+      const div = document.createElement("div");
+      div.className = "turn";
+      const conf =
+        data.confidence !== null && data.confidence !== undefined
+          ? data.confidence.toFixed(2)
+          : "n/a";
+      div.innerHTML = `<span class="speaker ${data.speaker.toLowerCase()}">${data.speaker}:</span>` +
+        `<div class="text">${escapeHtml(data.text)}</div>` +
+        `<div class="confidence">Confidence: ${conf}</div>`;
+      if (transcriptEl.firstChild?.classList.contains("transcript-empty")) {
+        transcriptEl.innerHTML = "";
+      }
+      transcriptEl.appendChild(div);
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      addDebugLog(`Final: ${data.speaker} - "${data.text.substring(0, 30)}..."`);
+    }
+
+    async function startMic() {
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+        analyser = audioCtx.createAnalyser();
+        sourceNode.connect(analyser);
+
+        processorNode = audioCtx.createScriptProcessor(4096, 1, 1);
+        analyser.connect(processorNode);
+        processorNode.connect(audioCtx.destination);
+
+        let frameCount = 0;
+        processorNode.onaudioprocess = (e) => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+          // Update mic level
+          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          analyser.getByteFrequencyData(dataArray);
+          const average =
+            dataArray.reduce((a, b) => a + b) / dataArray.length / 255;
+          micLevelBar.style.width = average * 100 + "%";
+
+          // Send audio
+          const input = e.inputBuffer.getChannelData(0);
+          const downsampled = downsampleTo16k(input, audioCtx.sampleRate);
+          const pcm16 = floatTo16BitPCM(downsampled);
+          frameCount++;
+          if (frameCount % 50 === 0) {
+            addDebugLog(`Sent ${frameCount} frames (${(frameCount * 4096 / audioCtx.sampleRate).toFixed(1)}s)`);
+          }
+          ws.send(pcm16);
+        };
+
+        document.getElementById("startBtn").disabled = true;
+        document.getElementById("stopBtn").disabled = false;
+        micIndicator.style.display = "flex";
+        setStatus(`Recording @ ${audioCtx.sampleRate}Hz...`, true);
+        addDebugLog("Microphone started");
+      } catch (e) {
+        addDebugLog(`Mic error: ${e.message}`);
+        setStatus(`Microphone error: ${e.message}`, false);
+      }
+    }
+
+    function stopMic() {
+      if (processorNode) processorNode.disconnect();
+      if (analyser) analyser.disconnect();
+      if (sourceNode) sourceNode.disconnect();
+      if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+      if (audioCtx) audioCtx.close();
+      document.getElementById("startBtn").disabled = false;
+      document.getElementById("stopBtn").disabled = true;
+      micIndicator.style.display = "none";
+      setStatus("Mic stopped", true);
+      addDebugLog("Microphone stopped");
+    }
+
+    function endSession() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        addDebugLog("Sending end_session");
+        ws.send(JSON.stringify({ type: "end_session" }));
+      }
+    }
+
+    function downsampleTo16k(buffer, inputSampleRate) {
+      if (inputSampleRate === TARGET_SAMPLE_RATE) return buffer;
+      const ratio = inputSampleRate / TARGET_SAMPLE_RATE;
+      const outLength = Math.floor(buffer.length / ratio);
+      const result = new Float32Array(outLength);
+      for (let i = 0; i < outLength; i++) {
+        const srcIndex = i * ratio;
+        const i0 = Math.floor(srcIndex);
+        const i1 = Math.min(i0 + 1, buffer.length - 1);
+        const frac = srcIndex - i0;
+        result[i] = buffer[i0] * (1 - frac) + buffer[i1] * frac;
+      }
+      return result;
+    }
+
+    function floatTo16BitPCM(float32Array) {
+      const buffer = new ArrayBuffer(float32Array.length * 2);
+      const view = new DataView(buffer);
+      for (let i = 0; i < float32Array.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32Array[i]));
+        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+      return buffer;
+    }
+
+    // Auto-connect on page load for convenience
+    window.addEventListener("load", () => {
+      addDebugLog("Page loaded. Ready to connect.");
+    });
+  </script>
+</body>
+</html>

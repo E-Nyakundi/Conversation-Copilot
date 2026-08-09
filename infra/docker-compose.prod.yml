@@ -1,0 +1,72 @@
+# Conversation Copilot — Production Docker Compose (shared Oracle VM)
+#
+# Runs on the same VM as BizYangu. Deliberately does NOT run its own
+# Caddy/Nginx and does NOT publish port 8000 to the host — BizYangu's
+# existing Caddy container is the only thing that talks to
+# `copilot_backend` directly, over the `bizyangu_default` network it
+# already owns (see infra/caddy-copilot.snippet).
+#
+# Usage (run from the repo root on the VM):
+#   cp server/.env.example server/.env.production   # fill in real values
+#   docker compose -f infra/docker-compose.prod.yml -p copilot up -d --build
+#
+# The -p copilot flag keeps this stack's container/volume names
+# namespaced separately from bizyangu's compose project.
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: copilot_redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # No host port mapping — this is Copilot's own Channels layer
+    # backend, unrelated to bizyangu_redis. Keeping them separate avoids
+    # any risk of Copilot's channel groups colliding with BizYangu's
+    # Celery broker on the same Redis instance.
+
+  backend:
+    build:
+      context: ../server
+    container_name: copilot_backend
+    restart: unless-stopped
+    env_file:
+      - ../server/.env.production
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../server:/app
+      - media_data:/app/media
+      - ../index.html:/frontend/index.html:ro
+      - hf_cache:/root/.cache/huggingface
+    command: >
+      sh -c "python manage.py warmup_models && daphne -b 0.0.0.0 -p 8000 copilot.asgi:application"
+    # No host port mapping — only reachable from other containers on
+    # networks this service joins, i.e. bizyangu_default (below), which
+    # is where BizYangu's Caddy container lives.
+    networks:
+      - default
+      - bizyangu_default
+
+networks:
+  default:
+    # Copilot's own internal network (this service + its own redis).
+  bizyangu_default:
+    # BizYangu's existing network — must already exist (it does, since
+    # BizYangu's stack is already running). external: true means compose
+    # won't try to create or manage it, just join it.
+    external: true
+
+volumes:
+  redis_data:
+  media_data:
+  hf_cache:

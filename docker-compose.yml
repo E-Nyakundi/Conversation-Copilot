@@ -1,0 +1,56 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+
+  backend:
+    build:
+      context: ./server
+    restart: unless-stopped
+    depends_on:
+      - redis
+    env_file:
+      - ./server/.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./server:/app
+      - media_data:/app/media
+      # ./server is the only thing mounted into the container, so
+      # index.html (at the repo root, one level above server/) isn't
+      # visible to Django at all without this. Mounted read-only at a
+      # fixed path that copilot/urls.py knows to look for.
+      - ./index.html:/frontend/index.html:ro
+      # Persists downloaded AI model weights (faster-whisper, etc.) across
+      # container restarts/rebuilds. Without this, ~/.cache/huggingface
+      # lives inside the ephemeral container filesystem and gets wiped
+      # every time the container is recreated — meaning the Whisper model
+      # (100s of MB) silently re-downloads on the next mic test, which is
+      # what was actually happening (not the pip packages re-downloading).
+      - hf_cache:/root/.cache/huggingface
+    command: >
+      sh -c "python manage.py warmup_models && daphne -b 0.0.0.0 -p 8000 copilot.asgi:application"
+
+  # Cloudflare Tunnel — run `cloudflared tunnel login` and create a named
+  # tunnel first, then point TUNNEL_TOKEN at it in server/.env.
+  # This service is optional for local dev; only needed for phone access
+  # from outside your home network (Phase 0, step 2).
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    depends_on:
+      - backend
+    env_file:
+      - ./server/.env
+
+volumes:
+  redis_data:
+  media_data:
+  hf_cache:

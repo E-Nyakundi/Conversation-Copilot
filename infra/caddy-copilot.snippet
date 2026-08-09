@@ -1,0 +1,14 @@
+# Conversation Copilot — append this block to ~/bizyangu/Caddyfile
+#
+# Uses sslip.io instead of a real domain: it resolves to this VM's own
+# public IP with zero DNS setup, and Caddy's automatic HTTPS issues a
+# real Let's Encrypt cert against it exactly like it does for BizYangu's
+# api.biasharasystems.co.ke above — no certbot, no manual cert handling.
+# Caddy proxies WebSocket traffic transparently via reverse_proxy, so
+# wss:// "just works" here the same as plain http requests.
+#
+# Swap this for a real domain later by just changing the site address —
+# nothing else in this block needs to change.
+145-241-102-99.sslip.io {
+    reverse_proxy copilot_backend:8000
+}

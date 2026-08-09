@@ -1,0 +1,42 @@
+{
+  "sales_call": [
+    "A: Thanks for hopping on, I know you're busy this week.",
+    "B: No problem at all, happy to be here.",
+    "A: So last time we spoke you mentioned budget was a concern for Q3, is that still the case?",
+    "B: Yeah, honestly the budget got tighter, not looser.",
+    "A: Understood. What if we broke the rollout into two phases instead of one?",
+    "B: That could work. I don't think we can commit to the full package right now though.",
+    "A: Totally fair. Could you send me the updated headcount numbers by Friday?",
+    "B: Sure, I'll get that over to you.",
+    "A: Great. Let's go with the phased proposal then, I'll draft it up.",
+    "B: Sounds good. Oh, before I forget, has the security review finished on your end?",
+    "A: Not yet, that's still with our compliance team.",
+    "B: Okay, please keep me posted on that, it's a blocker for our legal team."
+  ],
+  "standup_meeting": [
+    "A: Okay let's get started, quick round robin.",
+    "B: I finished the STK push retry logic yesterday, no blockers.",
+    "A: Nice. Did the M-Pesa callback timeout get fixed too?",
+    "B: Not yet, I'll pick that up today.",
+    "C: I'm still stuck on the cart UX overhaul, the unit conversion is buggy.",
+    "A: What's actually broken there?",
+    "C: When you switch units mid-cart the totals don't recalculate.",
+    "A: Okay, let's make sure that's fixed before the demo on Thursday.",
+    "C: Will do.",
+    "B: Switching gears, has anyone looked at the receipt sharing bug on Android?",
+    "A: I haven't, can you file a ticket for it?",
+    "B: Yeah I'll do that after standup."
+  ],
+  "interview_practice": [
+    "A: Tell me about a time you disagreed with a technical decision.",
+    "B: Sure. On a past project the team wanted to use a synchronous queue and I pushed back.",
+    "A: What was your concern with that approach?",
+    "B: My concern was that it wouldn't scale past a few hundred concurrent users.",
+    "A: How did you resolve the disagreement?",
+    "B: I put together a small benchmark and shared the numbers with the team.",
+    "A: And what happened after that?",
+    "B: We ended up deciding to go with an async approach instead.",
+    "A: Great, let's move on to a different topic. How do you handle tight deadlines?",
+    "B: I try to scope ruthlessly and communicate early if something's at risk."
+  ]
+}

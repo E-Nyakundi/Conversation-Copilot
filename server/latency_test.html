@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Copilot Latency Test</title>
+  <style>
+    body { font-family: sans-serif; max-width: 480px; margin: 40px auto; }
+    input { width: 100%; padding: 8px; margin-bottom: 8px; }
+    button { padding: 8px 16px; }
+    #log { margin-top: 16px; white-space: pre-wrap; font-family: monospace; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h2>WebSocket Round-Trip Latency Test</h2>
+  <p>Enter your tunnel WSS URL (e.g. <code>wss://your-tunnel.trycloudflare.com/ws/ping/</code>).
+     Open this page on your phone over cellular data for a realistic reading.</p>
+  <input id="url" placeholder="wss://..." />
+  <button onclick="connect()">Connect</button>
+  <button onclick="sendPing()" id="pingBtn" disabled>Send Ping</button>
+  <div id="log"></div>
+
+  <script>
+    let ws;
+    const log = (msg) => {
+      document.getElementById('log').textContent += msg + "\n";
+    };
+
+    function connect() {
+      const url = document.getElementById('url').value;
+      ws = new WebSocket(url);
+      ws.onopen = () => {
+        log("Connected.");
+        document.getElementById('pingBtn').disabled = false;
+      };
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        const now = Date.now();
+        const roundTrip = now - data.client_sent_at;
+        const upLeg = data.server_received_at - data.client_sent_at;
+        const downLeg = now - data.server_sent_at;
+        log(`Round trip: ${roundTrip}ms  (up: ${upLeg.toFixed(0)}ms, down: ${downLeg.toFixed(0)}ms)`);
+      };
+      ws.onerror = (e) => log("Error: " + JSON.stringify(e));
+      ws.onclose = () => {
+        log("Disconnected.");
+        document.getElementById('pingBtn').disabled = true;
+      };
+    }
+
+    function sendPing() {
+      ws.send(JSON.stringify({ client_sent_at: Date.now() }));
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+Django>=5.0,<5.1
+channels>=4.1,<5.0
+channels_redis>=4.2,<5.0
+daphne>=4.1,<5.0
+redis>=5.0,<6.0
+python-dotenv>=1.0,<2.0
+numpy>=1.26,<2.0
+
+# Phase 1 — VAD + STT (required for AudioStreamConsumer)
+# CPU-only torch is fine to start; swap the index/wheel for a CUDA build
+# if your server has a GPU worth using.
+torch>=2.2,<3.0
+torchaudio>=2.2,<3.0
+faster-whisper>=1.0,<2.0
+
+# silero-vad ships its ONNX model file inside the package itself, so
+# loading it never hits GitHub at runtime (unlike the old torch.hub
+# approach, which was rate-limited at 60 req/hr/IP by GitHub's anonymous
+# API and broke on every rebuild). Requires onnxruntime for the onnx=True
+# path used in audio/vad.py.
+silero-vad>=5.1,<6.0
+onnxruntime>=1.17,<2.0
+
+# Phase 3 — local LLM for suggestion generation (optional, disabled for now
+# due to network timeout issues with large source wheel).
+# Uncomment and rebuild if needed:
+# llama-cpp-python>=0.3,<0.4
+
+# Phase 1 — optional real speaker diarization (off by default; the naive
+# pause-based labeler in audio/speaker.py works with zero extra deps).
+# Uncomment to enable, then set ENABLE_DIARIZATION=1 and HF_TOKEN in .env
+# (HF_TOKEN needs access to pyannote/speaker-diarization-3.1 — accept its
+# terms on huggingface.co first):
+# pyannote.audio>=3.1,<4.0
+
+# Added in later phases — uncomment as you build them:
+# sentence-transformers
+# faiss-cpu
+# llama-cpp-python

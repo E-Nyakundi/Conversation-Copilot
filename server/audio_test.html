@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Copilot Audio/Transcript Test</title>
+  <style>
+    body { font-family: sans-serif; max-width: 560px; margin: 40px auto; }
+    input { width: 100%; padding: 8px; margin-bottom: 8px; box-sizing: border-box; }
+    button { padding: 8px 16px; margin-right: 8px; }
+    #status { margin: 8px 0; font-size: 13px; color: #555; }
+    #transcript { margin-top: 16px; border: 1px solid #ddd; border-radius: 6px; padding: 12px; min-height: 200px; }
+    .turn { margin-bottom: 10px; }
+    .turn .speaker { font-weight: bold; }
+    .turn .conf { color: #999; font-size: 11px; margin-left: 6px; }
+    .partial { color: #999; font-style: italic; }
+    .suggestion { margin: 6px 0 10px 16px; padding: 8px 10px; background: #eef6ff; border-left: 3px solid #4a90d9; border-radius: 4px; font-size: 13px; }
+    .suggestion .label { font-weight: bold; color: #2b5f94; }
+    .suggestion .meta { color: #888; font-size: 11px; margin-left: 6px; }
+  </style>
+</head>
+<body>
+  <h2>Audio Stream / Live Transcript Test (Phase 1)</h2>
+  <p>Enter your tunnel WSS URL for the audio endpoint, e.g.
+     <code>wss://your-tunnel.trycloudflare.com/ws/audio/</code> (new session)
+     or append an existing session id, e.g. <code>.../ws/audio/&lt;uuid&gt;/</code>.
+     Test on your phone over cellular data for a realistic reading, same as
+     the Phase 0 latency test.</p>
+  <input id="url" placeholder="wss://.../ws/audio/" />
+  <button onclick="connect()">Connect</button>
+  <button onclick="startMic()" id="startBtn" disabled>Start Mic</button>
+  <button onclick="stopMic()" id="stopBtn" disabled>Stop Mic</button>
+  <button onclick="endSession()" id="endBtn" disabled>End Session</button>
+  <div id="status">Not connected.</div>
+  <div id="transcript"></div>
+
+  <script>
+    let ws, audioCtx, sourceNode, processorNode, mediaStream;
+    let sessionId = null;
+    let partialEl = null;
+    const TARGET_SAMPLE_RATE = 16000;
+
+    const statusEl = document.getElementById('status');
+    const transcriptEl = document.getElementById('transcript');
+    const setStatus = (msg) => { statusEl.textContent = msg; };
+
+    function connect() {
+      const url = document.getElementById('url').value;
+      ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = () => {
+        setStatus('Connected. Waiting for session_started...');
+        document.getElementById('startBtn').disabled = false;
+        document.getElementById('endBtn').disabled = false;
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'session_started') {
+          sessionId = data.session_id;
+          setStatus(`Session: ${sessionId}`);
+        } else if (data.type === 'partial') {
+          renderPartial(data.text);
+        } else if (data.type === 'final') {
+          renderFinal(data);
+        } else if (data.type === 'suggestion') {
+          renderSuggestion(data);
+        } else if (data.type === 'session_ended') {
+          setStatus(`Session ${sessionId} ended.`);
+        }
+      };
+
+      ws.onerror = (e) => setStatus('Error — see console.');
+      ws.onclose = () => {
+        setStatus('Disconnected.');
+        document.getElementById('startBtn').disabled = true;
+        document.getElementById('stopBtn').disabled = true;
+        document.getElementById('endBtn').disabled = true;
+      };
+    }
+
+    function renderPartial(text) {
+      if (!partialEl) {
+        partialEl = document.createElement('div');
+        partialEl.className = 'turn partial';
+        transcriptEl.appendChild(partialEl);
+      }
+      partialEl.textContent = text;
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    function renderFinal(data) {
+      if (partialEl) {
+        partialEl.remove();
+        partialEl = null;
+      }
+      const div = document.createElement('div');
+      div.className = 'turn';
+      const conf = data.confidence !== null && data.confidence !== undefined
+        ? data.confidence.toFixed(2) : 'n/a';
+      div.innerHTML = `<span class="speaker">${data.speaker}:</span> ${data.text}` +
+        `<span class="conf">(confidence: ${conf})</span>`;
+      transcriptEl.appendChild(div);
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    // Phase 3: suggestions arrive asynchronously, some time after the
+    // `final` message for the turn that contained the question — the
+    // local LLM call runs as a background task server-side so it doesn't
+    // block the live transcript. Just append whenever it shows up.
+    function renderSuggestion(data) {
+      const div = document.createElement('div');
+      div.className = 'suggestion';
+      div.innerHTML = `<span class="label">💡 Suggested answer:</span> ${data.answer}` +
+        `<span class="meta">(${data.latency_ms}ms)</span>`;
+      transcriptEl.appendChild(div);
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    async function startMic() {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+
+      // ScriptProcessorNode is deprecated but is the simplest way to get raw
+      // PCM samples across browsers without an AudioWorklet module file —
+      // fine for a throwaway test page.
+      processorNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      sourceNode.connect(processorNode);
+      processorNode.connect(audioCtx.destination);
+
+      processorNode.onaudioprocess = (e) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const input = e.inputBuffer.getChannelData(0);
+        const downsampled = downsampleTo16k(input, audioCtx.sampleRate);
+        const pcm16 = floatTo16BitPCM(downsampled);
+        ws.send(pcm16);
+      };
+
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('stopBtn').disabled = false;
+      setStatus(`Streaming mic @ ${audioCtx.sampleRate}Hz -> resampled to ${TARGET_SAMPLE_RATE}Hz`);
+    }
+
+    function stopMic() {
+      if (processorNode) processorNode.disconnect();
+      if (sourceNode) sourceNode.disconnect();
+      if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+      if (audioCtx) audioCtx.close();
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('stopBtn').disabled = true;
+      setStatus('Mic stopped.');
+    }
+
+    function endSession() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'end_session' }));
+      }
+    }
+
+    // Linear-interpolation downsample from the browser's native sample rate
+    // (commonly 44100/48000Hz) to 16kHz mono. Good enough for STT input;
+    // not a proper anti-aliased resample, but the model tolerates it fine.
+    function downsampleTo16k(buffer, inputSampleRate) {
+      if (inputSampleRate === TARGET_SAMPLE_RATE) return buffer;
+      const ratio = inputSampleRate / TARGET_SAMPLE_RATE;
+      const outLength = Math.floor(buffer.length / ratio);
+      const result = new Float32Array(outLength);
+      for (let i = 0; i < outLength; i++) {
+        const srcIndex = i * ratio;
+        const i0 = Math.floor(srcIndex);
+        const i1 = Math.min(i0 + 1, buffer.length - 1);
+        const frac = srcIndex - i0;
+        result[i] = buffer[i0] * (1 - frac) + buffer[i1] * frac;
+      }
+      return result;
+    }
+
+    function floatTo16BitPCM(float32Array) {
+      const buffer = new ArrayBuffer(float32Array.length * 2);
+      const view = new DataView(buffer);
+      for (let i = 0; i < float32Array.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32Array[i]));
+        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+      return buffer;
+    }
+  </script>
+</body>
+</html>
