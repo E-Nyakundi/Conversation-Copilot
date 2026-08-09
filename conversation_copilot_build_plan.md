@@ -213,9 +213,14 @@ Goal: prove the network path and measure real latency before anything else depen
 - [x] Django ASGI project scaffolded with Channels installed
 - [ ] ~~Cloudflare Tunnel configured~~ — **superseded (v3, revised):** existing shared VM instead, reachable via BizYangu's existing Caddy reverse proxy (not a new Nginx instance — see §6a), confirmed reachable from outside your home network
 - [ ] Flutter app scaffolded, connects to the VM's `wss://` URL directly (no tunnel)
-- [ ] Minimal round-trip test: phone sends a text ping over WebSocket → server echoes it back → measure latency across at least 3 network conditions (phone on cellular, phone on wifi, from a different city/region if possible) — **re-run this against the VM**, don't carry over the old home-wifi/tunnel numbers below, since the network path has changed
+- [x] Minimal round-trip test: phone sends a text ping over WebSocket → server echoes it back → measure latency across at least 3 network conditions (phone on cellular, phone on wifi, from a different city/region if possible) — **re-run against the VM, done for WiFi; cellular still outstanding** (see decision gate below)
 - [ ] Audio streaming proof of concept: phone mic → chunked PCM/Opus → WebSocket → server writes to a file, confirm no corruption/drift
-- [ ] **Decision gate:** record actual round-trip latency numbers here. This number determines whether Completion Mode (stretch phase, below) is ever attempted. (Old home-wifi-via-tunnel number: ~273–278ms round trip — kept for reference only, not valid for the VM path.)
+- [ ] **Decision gate:** round-trip latency measured against the live VM (`wss://145-241-102-99.sslip.io/ws/ping/`), via `PingConsumer`/`latency_test.html`:
+  - **WiFi (phone), 7 pings:** 274, 228, 257, 250, 223, 311, 275ms — mean ≈260ms, range 223–311ms
+  - **WiFi (dev PC, same network), 8 pings:** 189, 260, 194, 566, 300, 225, 234, 195ms — mean ≈270ms (≈228ms excluding the 566ms outlier). Note: this run's client/server clocks weren't synced, so the up/down leg split is unreliable (down leg came back negative) — only the total round-trip figure (client-clock-only) is trustworthy here.
+  - **Combined WiFi (15 pings):** median 250ms, mean ≈265ms, typical range 189–311ms, one 566ms outlier.
+  - **Cellular:** not yet tested — pending, to be run later.
+  - **Reading against the ~250–300ms Completion Mode threshold:** sitting right on the line, not a clean pass — median at 250ms, with at least one outlier well above (566ms). Borderline on WiFi; cellular (the harder condition, and the more decision-relevant one) is still unmeasured, so this gate is **not yet fully resolved** — treat Completion Mode as undecided until the cellular numbers come in.
 
 ### Phase 1 — Local Conversation Listener
 

@@ -35,7 +35,7 @@ def _hf_cache_has_model(model_size: str) -> bool:
 
 
 class WhisperEngine:
-    def __init__(self, model_size: str, device: str, compute_type: str):
+    def __init__(self, model_size: str, device: str, compute_type: str, default_language: str | None = None):
         from faster_whisper import WhisperModel  # deferred import, see module docstring
 
         cached = _hf_cache_has_model(model_size)
@@ -48,10 +48,27 @@ class WhisperEngine:
         self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
         elapsed = time.monotonic() - started
         print(f"[stt.engine] Whisper model '{model_size}' ready in {elapsed:.1f}s.", flush=True)
+        # Auto language-ID on short (1-7s) segments is unreliable, especially
+        # at beam_size=1/int8 — it was observed flipping between English,
+        # Italian, French, Swahili, Shona, and German at 17-50% confidence
+        # across consecutive segments from continuous English speech. A
+        # wrong language guess produces garbage or empty text, which the
+        # consumer then silently drops. Fixing a known language (default
+        # 'en', WHISPER_LANGUAGE env override) skips per-segment guessing
+        # entirely unless a caller explicitly asks for auto-detect.
+        self.default_language = default_language
+        print(
+            f"[stt.engine] Default transcription language: "
+            f"{self.default_language or 'auto-detect (per-segment guessing)'}",
+            flush=True,
+        )
 
-    def transcribe(self, audio: np.ndarray, language: str | None = None) -> dict:
+    def transcribe(self, audio: np.ndarray, language: str | None = "__default__") -> dict:
         """
         audio: mono float32 PCM in [-1, 1] at 16kHz.
+        language: ISO 639-1 code to force, or None to auto-detect. Omit
+        entirely (the "__default__" sentinel) to use this engine's
+        configured default_language instead of auto-detecting every call.
         Returns {"text": str, "confidence": float | None} where confidence
         is a rough proxy derived from segment avg_logprob (higher = better,
         typically ranges roughly -1.0 to 0.0 for reasonable transcriptions).
@@ -59,9 +76,11 @@ class WhisperEngine:
         if audio.size == 0:
             return {"text": "", "confidence": None}
 
+        effective_language = self.default_language if language == "__default__" else language
+
         segments, _info = self.model.transcribe(
             audio,
-            language=language,
+            language=effective_language,
             beam_size=1,
             vad_filter=False,  # we run our own VAD upstream (audio/vad.py)
             condition_on_previous_text=False,
@@ -92,7 +111,12 @@ def get_engine() -> WhisperEngine:
                 model_size = os.environ.get("WHISPER_MODEL_SIZE", "small")
                 device = os.environ.get("WHISPER_DEVICE", "cpu")
                 compute_type = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
-                _engine = WhisperEngine(model_size, device, compute_type)
+                # Empty string explicitly opts back into per-segment
+                # auto-detect (not recommended for short segments — see
+                # the note in WhisperEngine.__init__).
+                lang_env = os.environ.get("WHISPER_LANGUAGE", "en").strip()
+                default_language = lang_env or None
+                _engine = WhisperEngine(model_size, device, compute_type, default_language=default_language)
     return _engine
 
 
