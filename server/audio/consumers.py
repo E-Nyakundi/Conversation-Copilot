@@ -335,15 +335,16 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
 
     async def _generate_suggestion(self, turn: Turn, extraction: Extraction):
         """
-        Phase 3: single-shot local-LLM suggestion for one detected question.
-        Runs as a background task (see connect()/_extract_and_emit) so it
-        never blocks incoming audio frames on this connection. Best-effort:
-        a missing/misconfigured model (ai.local_llm.get_llm() raises
-        FileNotFoundError until LLM_MODEL_PATH is set — see .env.example)
-        or any inference failure just means no suggestion, not a crashed
-        session.
+        Phase 3 (v4): single-shot suggestion for one detected question,
+        via the hybrid router — Groq first (ai.cloud_router), local LLM
+        fallback. Runs as a background task (see connect()/
+        _extract_and_emit) so it never blocks incoming audio frames on
+        this connection. Best-effort: a missing/misconfigured Groq key
+        and local model (ai.local_llm.get_llm() raises FileNotFoundError
+        until LLM_MODEL_PATH is set — see .env.example) or any inference
+        failure just means no suggestion, not a crashed session.
         """
-        from ai.local_llm import get_llm
+        from ai.cloud_router import get_suggestion
 
         context_limit = int(os.environ.get("SUGGESTION_CONTEXT_TURNS", "6"))
         context_turns = await self._recent_turns_context(context_limit)
@@ -351,7 +352,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         started = time.monotonic()
         try:
             result = await asyncio.to_thread(
-                get_llm().suggest_answer, extraction.text, context_turns
+                get_suggestion, extraction.text, context_turns
             )
         except asyncio.CancelledError:
             raise

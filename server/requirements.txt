@@ -21,9 +21,17 @@ faster-whisper>=1.0,<2.0
 silero-vad>=5.1,<6.0
 onnxruntime>=1.17,<2.0
 
-# Phase 3 — local LLM for suggestion generation (optional, disabled for now
-# due to network timeout issues with large source wheel).
-# Uncomment and rebuild if needed:
+# Phase 3 — Groq client, the primary suggestion path (ai/cloud_router.py).
+# Lightweight pure-Python package, no large-wheel build issues like
+# llama-cpp-python below — safe to install unconditionally.
+groq>=0.11,<1.0
+
+# Phase 3 — local LLM, the fallback path when Groq is unreachable/rate-
+# limited (optional, disabled for now due to network timeout issues with
+# large source wheel). Uncomment and rebuild if needed — until then,
+# ai/cloud_router.py's fallback will raise ModuleNotFoundError instead of
+# silently degrading, so suggestions simply fail closed if Groq is down
+# and this isn't installed:
 # llama-cpp-python>=0.3,<0.4
 
 # Phase 1 — optional real speaker diarization (off by default; the naive
