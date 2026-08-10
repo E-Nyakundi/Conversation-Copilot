@@ -31,6 +31,14 @@
 
   <title>flutter_app</title>
   <link rel="manifest" href="manifest.json">
+
+  <!-- Mic capture for the web build — see lib/audio/capture_web.dart and
+       this file's own docstring for why this isn't done through
+       package:record like the native build. Loaded here (rather than
+       lazily) so window.copilotMic exists before Dart ever calls it;
+       the module only defines functions at load time, it doesn't touch
+       the mic until MicCapture.start() is called from a session. -->
+  <script src="audio_capture.js"></script>
 </head>
 <body>
   <!--
