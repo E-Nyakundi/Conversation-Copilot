@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'screens/live_session_screen.dart';
+
 void main() {
   runApp(const CopilotApp());
 }
@@ -149,7 +151,20 @@ class _PingTestScreenState extends State<PingTestScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('WebSocket Ping Test (Phase 0)')),
+      appBar: AppBar(
+        title: const Text('WebSocket Ping Test (Phase 0)'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.mic),
+            tooltip: 'Live Session (Phase 1)',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const LiveSessionScreen()),
+              );
+            },
+          ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
