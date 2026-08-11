@@ -74,11 +74,15 @@ prod-build:
 
 prod-up:
 	@echo "=== PROD: starting copilot_backend (this is what real traffic hits) ==="
-	docker compose -f infra/docker-compose.prod.yml -p copilot up -d copilot_backend
+	# --remove-orphans: the service was renamed backend -> copilot_backend
+	# at one point, which leaves a stale same-named container Compose
+	# doesn't recognize as "this project" anymore — without this flag,
+	# the new container creation fails on a name conflict with the old one.
+	docker compose -f infra/docker-compose.prod.yml -p copilot up -d --remove-orphans copilot_backend
 
 prod-deploy:
 	@echo "=== PROD: build + start copilot_backend (this is what real traffic hits) ==="
-	docker compose -f infra/docker-compose.prod.yml -p copilot up -d --build copilot_backend
+	docker compose -f infra/docker-compose.prod.yml -p copilot up -d --build --remove-orphans copilot_backend
 
 prod-logs:
 	@echo "=== PROD: tailing copilot_backend (this is what real traffic hits) ==="
