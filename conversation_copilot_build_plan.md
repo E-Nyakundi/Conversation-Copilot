@@ -269,6 +269,37 @@ This phase has two independent halves: things **you** need to do outside this re
 
 Steps 1–2 (Groq account + API key) are done — key is set on the VM. Step 5 is what's left before this phase can close.
 
+**Update:** end-to-end testing surfaced a real bug blocking step 5 (and blocking Phase 1's Flutter checkbox on Chrome specifically) — logged and fixed as its own item below, since it's an audio-capture issue, not a Groq/router issue.
+
+#### Flutter web audio capture — fixed
+
+**Symptom:** on the native Flutter app (Android), live sessions worked end-to-end (transcripts, A/B labels, suggestions). On the same app compiled for **web (Chrome)**, nothing happened at all — no transcript, no suggestion, no server-side log activity of any kind, despite speaking clearly.
+
+**Root cause:** `package:record` (used by `MicCapture` for mic capture) cannot stream raw PCM16 audio in a browser. Browsers' `MediaRecorder` API always encodes to `webm/opus` regardless of the encoder requested — a documented limitation of the browser API itself (confirmed via the package's own issue tracker), not something fixable from the Dart side by configuring `record` differently. So on web, the app was silently sending opus-encoded bytes labeled as raw PCM16 — the server's VAD/STT pipeline received garbage, never finalized a turn, and nothing downstream (extraction, suggestions) ever had a chance to run. This is exactly why `server/audio_test.html` (a plain browser page, not Flutter) worked in earlier Phase 1 testing — it never used `record` at all, and already solved this with hand-rolled Web Audio API code.
+
+**Fix:** `MicCapture` is now split by platform at compile time:
+- `flutter_app/lib/audio/capture.dart` — conditional-export facade (checks `dart.library.io` vs `dart.library.js_interop`, the latter chosen over the older `dart.library.html` check since it's also valid under Wasm compilation)
+- `flutter_app/lib/audio/capture_io.dart` — the original `package:record`-based implementation, unchanged, used on native
+- `flutter_app/lib/audio/capture_web.dart` — new; thin `dart:js_interop` wrapper
+- `flutter_app/web/audio_capture.js` — new; the actual browser logic, porting `audio_test.html`'s already-proven `getUserMedia → AudioContext → ScriptProcessorNode → manual downsample to 16kHz → manual Float32-to-PCM16LE` approach verbatim, rather than re-deriving it through JS interop typings for a deprecated Web Audio API surface
+- `flutter_app/web/index.html` — loads `audio_capture.js`
+- `flutter_app/lib/audio/capture_stub.dart` — unreachable-in-practice fallback so the conditional export stays exhaustive
+
+No changes needed to `live_session_screen.dart`, `main.dart`, or the WebSocket layer — `MicCapture`'s public interface (`start`/`stop`/`dispose`/`sampleRate`) is identical on both platforms, so the swap is invisible above the audio-capture layer. **Confirmed working on real Chrome** — transcripts now appear, same as the Android test. That surfaced a separate, real issue below.
+
+#### Transcription accuracy checkpoint — gates everything past this point
+
+**Symptom:** clean, correctly-pronounced speech ("What's the capital of Kenya?") transcribed as "That's the captain of Kenya" / "the capital of Kenya" (split across two speaker labels). Not a mic or audio-pipeline problem — confirmed the audio itself is reaching the server correctly.
+
+**Cause:** `stt/engine.py` had `beam_size=1` (greedy decoding) hardcoded — tuned for CPU speed on this VM's 2 vCPUs, never tuned for accuracy, and not even configurable without editing code. Short/quiet/accented speech is exactly where greedy decoding produces plausible-sounding wrong guesses like this.
+
+**Fix so far:** `WHISPER_BEAM_SIZE` is now a proper env var (default `5`, was hardcoded `1`), same pattern as `WHISPER_MODEL_SIZE`/`WHISPER_COMPUTE_TYPE`/`WHISPER_LANGUAGE` — so accuracy can actually be tuned and benchmarked instead of guessed at.
+
+**Not yet done — this is the actual checkbox:**
+- [ ] Rebuild + restart the backend with `WHISPER_BEAM_SIZE=5` and re-run the same test phrase(s) that failed above. Confirm the transcript is now correct.
+- [ ] If `beam_size=5` still isn't accurate enough, the next lever is `WHISPER_MODEL_SIZE=medium` (env-only change, no rebuild needed beyond the container picking up the new env var) — more RAM (~1.5GB int8) and slower per segment, but a real accuracy jump over `small`. Try beam_size before model size — it's free (no extra RAM) and often gets most of the improvement on its own.
+- [ ] Once a combination is accurate enough on real test phrases, note the final `WHISPER_MODEL_SIZE`/`WHISPER_BEAM_SIZE` values used here and move on to Phase 3 suggestion testing. Until this box is checked, suggestion-quality testing isn't meaningful — it'd be built on transcripts that are already wrong.
+
 ### Phase 4 — Teleprompter UI
 
 - [ ] Quick / Medium / Detailed answer level switching

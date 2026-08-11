@@ -78,10 +78,20 @@ class WhisperEngine:
 
         effective_language = self.default_language if language == "__default__" else language
 
+        # beam_size trades speed for accuracy — how many candidate token
+        # sequences Whisper explores per step before picking the best one.
+        # beam_size=1 (greedy decoding) was the original default purely for
+        # CPU latency on this VM's 2 vCPUs; it is NOT a measured accuracy
+        # choice, and short/quiet/accented speech is where it shows most
+        # (e.g. "What's" -> "That's", "capital" -> "captain" on a clean
+        # recording — both plausible-sounding wrong guesses that a wider
+        # beam search is more likely to avoid). Configurable per-call so it
+        # can be tuned/benchmarked without a code change.
+        beam_size = int(os.environ.get("WHISPER_BEAM_SIZE", "5"))
         segments, _info = self.model.transcribe(
             audio,
             language=effective_language,
-            beam_size=1,
+            beam_size=beam_size,
             vad_filter=False,  # we run our own VAD upstream (audio/vad.py)
             condition_on_previous_text=False,
         )
