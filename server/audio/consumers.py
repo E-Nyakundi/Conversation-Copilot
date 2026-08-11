@@ -285,9 +285,20 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         """
         try:
             found = await asyncio.to_thread(intent_module.extract, turn.text, self.last_turn_text)
-        except Exception:
+        except Exception as e:
             # Extraction is additive; never take the session down over it.
+            # Still printed (not just logger.exception) because this app has
+            # no console log handler configured for normal-severity
+            # messages — see the note on _generate_suggestion below, same
+            # reasoning applies here.
+            print(f"[extract] turn {turn.id}: extraction raised {e!r}", flush=True)
             return
+
+        print(
+            f"[extract] turn {turn.id} ({turn.text!r}): found {len(found)} item(s) "
+            f"{[(i.type, round(i.confidence, 2)) for i in found]}",
+            flush=True,
+        )
 
         if not found:
             return
@@ -343,26 +354,45 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         and local model (ai.local_llm.get_llm() raises FileNotFoundError
         until LLM_MODEL_PATH is set — see .env.example) or any inference
         failure just means no suggestion, not a crashed session.
+
+        Diagnostic prints throughout (not just logger calls) are
+        deliberate: this project has no LOGGING config in settings.py, so
+        logger.info/debug calls have nowhere configured to go, and even
+        logger.warning/exception only reach the console via Python's
+        bare-minimum "last resort" stderr handler — easy to miss and easy
+        to mistake for "nothing happened" when actually something did.
+        print(..., flush=True) is the same pattern the startup warmup
+        messages already use, and those are confirmed to show up.
         """
         from ai.cloud_router import get_suggestion
 
+        print(f"[suggest] extraction {extraction.id} ({extraction.text!r}): starting", flush=True)
+
         context_limit = int(os.environ.get("SUGGESTION_CONTEXT_TURNS", "6"))
-        context_turns = await self._recent_turns_context(context_limit)
 
         started = time.monotonic()
         try:
+            context_turns = await self._recent_turns_context(context_limit)
             result = await asyncio.to_thread(
                 get_suggestion, extraction.text, context_turns
             )
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as e:
+            print(f"[suggest] extraction {extraction.id}: generation failed: {e!r}", flush=True)
             logger.exception("Suggestion generation failed for extraction %s", extraction.id)
             return
         latency_ms = (time.monotonic() - started) * 1000
 
         if not result or not result.get("text"):
+            print(f"[suggest] extraction {extraction.id}: empty result, nothing to send", flush=True)
             return
+
+        print(
+            f"[suggest] extraction {extraction.id}: got answer from "
+            f"{result.get('model')} in {latency_ms:.0f}ms",
+            flush=True,
+        )
 
         suggestion = await Suggestion.objects.acreate(
             session=self.session,
