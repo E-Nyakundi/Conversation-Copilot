@@ -35,7 +35,7 @@ services:
       # what was actually happening (not the pip packages re-downloading).
       - hf_cache:/root/.cache/huggingface
     command: >
-      sh -c "python manage.py warmup_models && daphne -b 0.0.0.0 -p 8000 copilot.asgi:application"
+      sh -c "python manage.py migrate && python manage.py warmup_models && daphne -b 0.0.0.0 -p 8000 copilot.asgi:application"
 
   # Cloudflare Tunnel — run `cloudflared tunnel login` and create a named
   # tunnel first, then point TUNNEL_TOKEN at it in server/.env.
