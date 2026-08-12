@@ -349,7 +349,7 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
                 style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
             const SizedBox(height: 4),
             Expanded(
-              flex: 2,
+              flex: 3,
               child: Container(
                 decoration: BoxDecoration(
                   border: Border.all(color: Colors.grey.shade300),
@@ -362,7 +362,7 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
                     text: TextSpan(
                       style: DefaultTextStyle.of(context)
                           .style
-                          .copyWith(height: 1.4),
+                          .copyWith(fontSize: 13, height: 1.4),
                       children: [
                         TextSpan(text: _fullTranscriptLines.join('\n')),
                         if (_partialText != null)
@@ -385,7 +385,7 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
                 style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
             const SizedBox(height: 4),
             Expanded(
-              flex: 3,
+              flex: 2,
               child: Container(
                 decoration: BoxDecoration(
                   border: Border.all(color: Colors.grey.shade300),
