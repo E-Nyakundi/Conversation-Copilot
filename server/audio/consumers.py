@@ -8,6 +8,7 @@ import numpy as np
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.utils import timezone
 
+from ai.prompts import DEFAULT_ANSWER_LEVEL, normalize_level
 from conversation import intent as intent_module
 from conversation.models import Extraction, Session, Suggestion, Turn
 
@@ -108,6 +109,12 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         self.speech_time_since_partial_s = 0.0
         self.speaker_labeler = speaker_module.NaivePauseSpeakerLabeler()
         self.last_turn_text = None  # Phase 2: topic_change needs the previous turn's text
+        # Phase 4: answer-level switching. Session-wide, not per-question —
+        # a client-sent "set_answer_level" message (see receive()) changes
+        # this for every suggestion generated from here on, until changed
+        # again. Starts at the default so a client that never sends the
+        # message gets identical behavior to before Phase 4.
+        self.answer_level = DEFAULT_ANSWER_LEVEL
         # Phase 3: suggestion generation runs as fire-and-forget background
         # tasks (see _extract_and_emit / _generate_suggestion) rather than
         # inline, since local LLM inference can take several seconds even
@@ -150,6 +157,20 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             await self.session.asave()
             await self.send(text_data=json.dumps({"type": "session_ended"}))
             await self.close()
+            return
+
+        if payload.get("type") == "set_answer_level":
+            # Phase 4: Quick/Medium/Detailed switching. Silently normalized
+            # rather than rejected — see ai.prompts.normalize_level — so a
+            # stale/misspelled client value degrades to the default instead
+            # of breaking suggestion generation.
+            self.answer_level = normalize_level(payload.get("level"))
+            await self.send(
+                text_data=json.dumps(
+                    {"type": "answer_level_set", "level": self.answer_level}
+                )
+            )
+            return
 
     # -- audio pipeline -----------------------------------------------------
 
@@ -385,7 +406,17 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         """
         from ai.cloud_router import get_suggestion
 
-        print(f"[suggest] extraction {extraction.id} ({extraction.text!r}): starting", flush=True)
+        # Snapshot the level at the moment generation starts, not when it
+        # finishes — if the client switches levels mid-generation, this
+        # in-flight suggestion should still reflect what was asked for
+        # when it kicked off, not whatever the level happens to be later.
+        level = self.answer_level
+
+        print(
+            f"[suggest] extraction {extraction.id} ({extraction.text!r}): "
+            f"starting (level={level})",
+            flush=True,
+        )
 
         context_limit = int(os.environ.get("SUGGESTION_CONTEXT_TURNS", "6"))
 
@@ -393,7 +424,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         try:
             context_turns = await self._recent_turns_context(context_limit)
             result = await asyncio.to_thread(
-                get_suggestion, extraction.text, context_turns
+                get_suggestion, extraction.text, context_turns, level
             )
         except asyncio.CancelledError:
             raise
@@ -421,6 +452,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             answer_text=result["text"],
             model_used=result.get("model", ""),
             latency_ms=latency_ms,
+            answer_level=level,
         )
 
         try:
@@ -434,6 +466,16 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                         "question": extraction.text,
                         "answer": result["text"],
                         "latency_ms": round(latency_ms),
+                        "answer_level": level,
+                        # Extraction confidence, not model confidence — the
+                        # rule-based (or future LLM) extractor's own
+                        # confidence that this text was actually a
+                        # question worth answering. Deliberately NOT a
+                        # fabricated LLM self-confidence score: the build
+                        # plan (Phase 7 notes) explicitly defers that until
+                        # it can be paired with a cheaper proxy signal
+                        # rather than trusted alone.
+                        "extraction_confidence": extraction.confidence,
                     }
                 )
             )

@@ -55,7 +55,14 @@ class CopilotSocket {
   }
 
   void sendEndSession() {
-    _channel?.sink.add(jsonEncode({'type': 'end_session'}));
+    send({'type': 'end_session'});
+  }
+
+  /// Send an arbitrary JSON control message (e.g. Phase 4's
+  /// set_answer_level). Kept generic rather than adding a one-off method
+  /// per message type, matching sendEndSession's existing shape.
+  void send(Map<String, dynamic> message) {
+    _channel?.sink.add(jsonEncode(message));
   }
 
   Future<void> disconnect() async {

@@ -18,24 +18,51 @@ class LiveSessionScreen extends StatefulWidget {
 
 enum _EntryKind { finalTurn, suggestion }
 
+/// Phase 4: Quick / Medium / Detailed answer-level switching. Values
+/// match the server's ai/prompts.py:ANSWER_LEVELS keys exactly — sent
+/// verbatim in the {"type": "set_answer_level", "level": ...} message.
+enum AnswerLevel { quick, medium, detailed }
+
+extension on AnswerLevel {
+  String get wireValue => name; // 'quick' / 'medium' / 'detailed'
+  String get label => switch (this) {
+        AnswerLevel.quick => 'Quick',
+        AnswerLevel.medium => 'Medium',
+        AnswerLevel.detailed => 'Detailed',
+      };
+}
+
 class _TranscriptEntry {
   _TranscriptEntry.finalTurn({
     required this.speaker,
     required this.text,
     required this.confidence,
   })  : kind = _EntryKind.finalTurn,
-        latencyMs = null;
+        latencyMs = null,
+        answerLevel = null,
+        extractionConfidence = null;
 
-  _TranscriptEntry.suggestion({required this.text, required this.latencyMs})
-      : kind = _EntryKind.suggestion,
+  _TranscriptEntry.suggestion({
+    required this.text,
+    required this.latencyMs,
+    required this.answerLevel,
+    required this.extractionConfidence,
+  })  : kind = _EntryKind.suggestion,
         speaker = null,
         confidence = null;
 
   final _EntryKind kind;
   final String? speaker;
   final String text;
-  final double? confidence;
+  final double? confidence; // final-turn (STT) confidence
   final int? latencyMs;
+  final String? answerLevel;
+  // Extraction confidence, not model confidence — see the matching note
+  // in server/audio/consumers.py._generate_suggestion. There's no
+  // reliable LLM self-confidence signal yet (deferred per the build
+  // plan), so this reflects how confident the question-extractor was
+  // that this text was actually a question worth answering.
+  final double? extractionConfidence;
 }
 
 class _LiveSessionScreenState extends State<LiveSessionScreen> {
@@ -56,6 +83,18 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
   bool _connected = false;
   bool _recording = false;
   String _status = 'Not connected.';
+
+  // Phase 4: defaults to Medium, matching ai/prompts.py's
+  // DEFAULT_ANSWER_LEVEL — stays in sync with the server without needing
+  // an explicit message until the user actually changes it.
+  AnswerLevel _answerLevel = AnswerLevel.medium;
+
+  void _setAnswerLevel(AnswerLevel level) {
+    setState(() => _answerLevel = level);
+    if (_connected) {
+      _socket.send({'type': 'set_answer_level', 'level': level.wireValue});
+    }
+  }
 
   void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -104,6 +143,21 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
           _sessionId = data['session_id'] as String?;
           _status = 'Session: $_sessionId';
         });
+        // Phase 4: server defaults to Medium too, but this covers the
+        // case where the user picked a different level before hitting
+        // Connect (the button is enabled regardless of connection state).
+        _socket.send({'type': 'set_answer_level', 'level': _answerLevel.wireValue});
+        break;
+      case 'answer_level_set':
+        // Server's ack of set_answer_level — mostly informational, but
+        // keeps the UI honest if a message ever gets normalized
+        // server-side (see ai.prompts.normalize_level) to something
+        // other than what was requested.
+        final level = data['level'] as String?;
+        final matched = AnswerLevel.values.where((l) => l.wireValue == level);
+        if (matched.isNotEmpty) {
+          setState(() => _answerLevel = matched.first);
+        }
         break;
       case 'partial':
         setState(() => _partialText = data['text'] as String?);
@@ -129,6 +183,8 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
           _entries.add(_TranscriptEntry.suggestion(
             text: data['answer'] as String? ?? '',
             latencyMs: (data['latency_ms'] as num?)?.toInt(),
+            answerLevel: data['answer_level'] as String?,
+            extractionConfidence: (data['extraction_confidence'] as num?)?.toDouble(),
           ));
         });
         _scrollToEnd();
@@ -236,6 +292,22 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
             ),
             const SizedBox(height: 8),
             Text(_status, style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Text('Answer length: ',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(width: 4),
+                SegmentedButton<AnswerLevel>(
+                  segments: AnswerLevel.values
+                      .map((l) => ButtonSegment(value: l, label: Text(l.label)))
+                      .toList(),
+                  selected: {_answerLevel},
+                  onSelectionChanged: (selection) => _setAnswerLevel(selection.first),
+                  showSelectedIcon: false,
+                ),
+              ],
+            ),
             const SizedBox(height: 12),
             Expanded(
               child: Container(
@@ -286,6 +358,15 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
                         ),
                       );
                     }
+                    final levelLabel = entry.answerLevel != null
+                        ? entry.answerLevel![0].toUpperCase() +
+                            entry.answerLevel!.substring(1)
+                        : null;
+                    // Extraction confidence, not model confidence — see
+                    // the note on _TranscriptEntry.extractionConfidence.
+                    final confLabel = entry.extractionConfidence != null
+                        ? 'extraction ${(entry.extractionConfidence! * 100).round()}%'
+                        : null;
                     return Container(
                       margin: const EdgeInsets.only(left: 16, top: 4, bottom: 8),
                       padding:
@@ -296,27 +377,47 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
                             left: BorderSide(color: Color(0xFF4A90D9), width: 3)),
                         borderRadius: BorderRadius.circular(4),
                       ),
-                      child: RichText(
-                        text: TextSpan(
-                          style: DefaultTextStyle.of(context)
-                              .style
-                              .copyWith(fontSize: 13),
-                          children: [
-                            const TextSpan(
-                              text: '💡 Suggested answer: ',
-                              style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF2B5F94)),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          RichText(
+                            text: TextSpan(
+                              style: DefaultTextStyle.of(context)
+                                  .style
+                                  .copyWith(fontSize: 13),
+                              children: [
+                                const TextSpan(
+                                  text: '💡 Suggested answer: ',
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF2B5F94)),
+                                ),
+                                TextSpan(text: entry.text),
+                              ],
                             ),
-                            TextSpan(text: entry.text),
-                            if (entry.latencyMs != null)
-                              TextSpan(
-                                text: '  (${entry.latencyMs}ms)',
-                                style: TextStyle(
-                                    color: Colors.grey.shade500, fontSize: 11),
-                              ),
-                          ],
-                        ),
+                          ),
+                          const SizedBox(height: 4),
+                          Wrap(
+                            spacing: 8,
+                            children: [
+                              if (levelLabel != null)
+                                Text('level: $levelLabel',
+                                    style: TextStyle(
+                                        color: Colors.grey.shade500,
+                                        fontSize: 11)),
+                              if (confLabel != null)
+                                Text(confLabel,
+                                    style: TextStyle(
+                                        color: Colors.grey.shade500,
+                                        fontSize: 11)),
+                              if (entry.latencyMs != null)
+                                Text('${entry.latencyMs}ms',
+                                    style: TextStyle(
+                                        color: Colors.grey.shade500,
+                                        fontSize: 11)),
+                            ],
+                          ),
+                        ],
                       ),
                     );
                   },

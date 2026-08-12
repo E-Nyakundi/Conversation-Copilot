@@ -339,10 +339,12 @@ Two remaining quality gaps, distinct from each other and from Update 5's RAM cei
 
 ### Phase 4 — Teleprompter UI
 
-- [ ] Quick / Medium / Detailed answer level switching
-- [ ] Confidence score display
-- [ ] Live Session screen polish
+- [x] **Quick / Medium / Detailed answer level switching** — `ai/prompts.py` gained `ANSWER_LEVELS` (per-level instruction + token budget, env-overridable via `LLM_MAX_TOKENS_QUICK/MEDIUM/DETAILED`), threaded through `ai/local_llm.py` and `ai/cloud_router.py`. `Suggestion.answer_level` persists which level produced each row (migration `0004_suggestion_answer_level.py`). `AudioStreamConsumer` tracks the level per-connection, accepts `{"type": "set_answer_level", "level": ...}` from the client (silently normalized to `medium` on anything unrecognized — see `ai.prompts.normalize_level`), and snapshots the level at generation-start so a mid-flight switch can't relabel an in-progress suggestion. Flutter: `live_session_screen.dart` has a `SegmentedButton` (Quick/Medium/Detailed) that sends `set_answer_level` and reflects the server's ack.
+- [x] **Confidence score display** — suggestion messages/rows now carry `extraction_confidence` (the rule-based extractor's confidence that the source text was actually a question — see `conversation/intent.py`), rendered as a badge under each suggestion bubble alongside level and latency. **Deliberately not a fabricated LLM self-confidence score** — the build plan's own Phase 7 notes already flagged that as something to pair with a cheaper proxy signal once Phase 6's RAG exists, not to trust alone; extraction confidence is a real, already-computed signal instead of inventing a new unreliable one.
+- [x] Live Session screen polish — title de-Phase-1'd (previous session), suggestion bubbles restructured (level/confidence/latency badges row under the answer text rather than crammed inline).
 - [ ] Floating overlay via `flutter_overlay_window` (`SYSTEM_ALERT_WINDOW`-based) — this worked in this app's v1 Flutter build; **confirm it still works on current Android versions/permissions before relying on it** (Android has tightened overlay permission flows across versions), but this is now a verification task, not an open research spike. In-app persistent bar remains the fallback if a permission or OS-version issue surfaces.
+
+**Not yet done — verification gap:** the answer-level/confidence work above was validated on the server side only (`manage.py check`, `makemigrations --check --dry-run`, and a fresh `migrate` all pass; `ai/prompts.py`'s logic spot-checked directly). The Flutter changes (`live_session_screen.dart`, `ws/socket.dart`) were reviewed by hand — brace/paren balance, Dart 3 switch-expression and `SegmentedButton` (Material 3, confirmed enabled in `main.dart`) usage checked manually — but **not run through `flutter analyze` or a real build**, since this sandbox has no Flutter/Dart toolchain and no network path to install one (Flutter's SDK isn't on the allowed-domains list). Run `flutter analyze` and a `flutter run -d chrome` smoke test as the next step before trusting this compiles.
 
 ### Phase 5 — Conversation Memory
 

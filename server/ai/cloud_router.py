@@ -33,7 +33,7 @@ import logging
 import os
 import threading
 
-from ai.prompts import SUGGESTION_SYSTEM_PROMPT, build_suggestion_prompt
+from ai.prompts import DEFAULT_ANSWER_LEVEL, SUGGESTION_SYSTEM_PROMPT, build_suggestion_prompt, get_max_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ def _get_groq_client():
     return _groq_client
 
 
-def _suggest_via_groq(question: str, context_turns: list[dict]) -> dict:
+def _suggest_via_groq(question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL) -> dict:
     """
     Raises on any Groq-side failure — get_suggestion() decides whether to
     fall back. Returns {"text": str, "model": str} on success, the same
@@ -66,9 +66,9 @@ def _suggest_via_groq(question: str, context_turns: list[dict]) -> dict:
 
     client = _get_groq_client()
     model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
-    max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "200"))
+    max_tokens = get_max_tokens(level)
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.4"))
-    user_prompt = build_suggestion_prompt(question, context_turns)
+    user_prompt = build_suggestion_prompt(question, context_turns, level)
 
     try:
         response = client.chat.completions.create(
@@ -90,7 +90,7 @@ def _suggest_via_groq(question: str, context_turns: list[dict]) -> dict:
     return {"text": choice.strip(), "model": f"groq:{model}"}
 
 
-def get_suggestion(question: str, context_turns: list[dict]) -> dict:
+def get_suggestion(question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL) -> dict:
     """
     Public entry point — same signature and return shape as
     ai.local_llm.LocalLLM.suggest_answer(), so audio/consumers.py can call
@@ -99,10 +99,14 @@ def get_suggestion(question: str, context_turns: list[dict]) -> dict:
     question: extracted question text to answer.
     context_turns: recent [{"speaker": ..., "text": ...}] turns, oldest
     first — passed straight through to whichever path handles the call.
+    level: Phase 4 answer-level (quick/medium/detailed) — see
+    ai/prompts.py:ANSWER_LEVELS. Passed through to both the Groq and
+    local paths so a level switch behaves identically regardless of
+    which one actually serves the request.
     """
     if os.environ.get("GROQ_API_KEY"):
         try:
-            return _suggest_via_groq(question, context_turns)
+            return _suggest_via_groq(question, context_turns, level)
         except Exception:
             logger.warning(
                 "Groq suggestion failed, falling back to local model",
@@ -113,4 +117,4 @@ def get_suggestion(question: str, context_turns: list[dict]) -> dict:
 
     from ai.local_llm import get_llm
 
-    return get_llm().suggest_answer(question, context_turns)
+    return get_llm().suggest_answer(question, context_turns, level)

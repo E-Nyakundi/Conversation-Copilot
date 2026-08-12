@@ -132,8 +132,25 @@ class Suggestion(models.Model):
         Extraction, on_delete=models.SET_NULL, related_name="suggestions", null=True, blank=True
     )
 
+    LEVEL_QUICK = "quick"
+    LEVEL_MEDIUM = "medium"
+    LEVEL_DETAILED = "detailed"
+
+    LEVEL_CHOICES = [
+        (LEVEL_QUICK, "Quick"),
+        (LEVEL_MEDIUM, "Medium"),
+        (LEVEL_DETAILED, "Detailed"),
+    ]
+
     question_text = models.TextField()
     answer_text = models.TextField()
+
+    # Phase 4: which answer-level (see ai/prompts.py:ANSWER_LEVELS) this
+    # suggestion was generated at — recorded per-row (not just used
+    # transiently) so Phase 8's debrief can see which level the user
+    # actually relied on during a session, and so a level switch mid-
+    # session doesn't retroactively mislabel earlier suggestions.
+    answer_level = models.CharField(max_length=20, choices=LEVEL_CHOICES, default=LEVEL_MEDIUM)
 
     model_used = models.CharField(max_length=100, blank=True)
     # Wall-clock generation time in ms — the real-world number that

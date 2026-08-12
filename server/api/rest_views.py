@@ -48,6 +48,12 @@ def _suggestion_summary(suggestion: Suggestion) -> dict:
         "answer": suggestion.answer_text,
         "model_used": suggestion.model_used,
         "latency_ms": suggestion.latency_ms,
+        "answer_level": suggestion.answer_level,
+        # Extraction confidence, not model confidence — see the matching
+        # note in audio/consumers.py._generate_suggestion.
+        "extraction_confidence": (
+            suggestion.extraction.confidence if suggestion.extraction_id else None
+        ),
         "turn_id": str(suggestion.turn_id),
         "extraction_id": str(suggestion.extraction_id) if suggestion.extraction_id else None,
         "created_at": suggestion.created_at.isoformat(),
@@ -128,7 +134,7 @@ def session_suggestions_view(request, session_id):
     except (Session.DoesNotExist, ValueError):
         raise Http404("session not found")
 
-    suggestions = session.suggestions.all()
+    suggestions = session.suggestions.select_related("extraction").all()
     return JsonResponse({"suggestions": [_suggestion_summary(s) for s in suggestions]})
 
 

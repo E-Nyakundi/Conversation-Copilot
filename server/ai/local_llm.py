@@ -21,7 +21,7 @@ import logging
 import os
 import threading
 
-from ai.prompts import SUGGESTION_SYSTEM_PROMPT, build_suggestion_prompt
+from ai.prompts import DEFAULT_ANSWER_LEVEL, SUGGESTION_SYSTEM_PROMPT, build_suggestion_prompt, get_max_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -51,15 +51,20 @@ class LocalLLM:
             verbose=False,
         )
 
-    def suggest_answer(self, question: str, context_turns: list[dict]) -> dict:
+    def suggest_answer(
+        self, question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL
+    ) -> dict:
         """
         question: extracted question text to answer.
         context_turns: recent [{"speaker": ..., "text": ...}] turns, oldest
         first — see ai/prompts.py for how these are used.
+        level: Phase 4 answer-level (quick/medium/detailed) — see
+        ai/prompts.py:ANSWER_LEVELS. Falls back to DEFAULT_ANSWER_LEVEL on
+        anything unrecognized.
         Returns {"text": str, "model": str}.
         """
-        user_prompt = build_suggestion_prompt(question, context_turns)
-        max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "200"))
+        user_prompt = build_suggestion_prompt(question, context_turns, level)
+        max_tokens = get_max_tokens(level)
         temperature = float(os.environ.get("LLM_TEMPERATURE", "0.4"))
 
         response = self.llm.create_chat_completion(

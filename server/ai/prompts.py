@@ -6,19 +6,80 @@ templates (interview practice, sales, negotiation, etc.) can plug in here
 later — swapping SUGGESTION_SYSTEM_PROMPT per-session-mode — without
 touching the model wrapper itself. For now there's a single general-
 purpose prompt; mode-awareness is explicitly out of scope until Phase 9.
+
+Phase 4: answer-level switching (Quick / Medium / Detailed) lives here
+too, as ANSWER_LEVELS — a per-level (instruction, max_tokens) pair, kept
+next to the prompt builder that consumes it rather than scattered across
+ai/local_llm.py and ai/cloud_router.py, since both callers need the exact
+same level->instruction and level->token-budget mapping and drift between
+them would be a silent bug.
 """
+
+import os
 
 SUGGESTION_SYSTEM_PROMPT = (
     "You are a real-time conversation copilot silently listening to a live "
     "conversation. A question has just been asked of the user. Suggest a "
-    "short, direct answer they could say out loud RIGHT NOW. Be concise — "
-    "this is a spoken suggestion, not an essay or explanation. Respond with "
-    "ONLY the suggested answer itself: no preamble, no meta-commentary, no "
-    "restating the question."
+    "direct answer they could say out loud RIGHT NOW. This is a spoken "
+    "suggestion, not an essay. Respond with ONLY the suggested answer "
+    "itself: no preamble, no meta-commentary, no restating the question."
 )
 
+DEFAULT_ANSWER_LEVEL = "medium"
 
-def build_suggestion_prompt(question: str, context_turns: list[dict]) -> str:
+# max_tokens is a generation budget, not a target length — the model can
+# (and often will) land short of it. Overridable per-level via env (see
+# get_max_tokens) for tuning without a code change once real usage shows
+# whether these defaults are too generous/stingy on your actual hardware.
+ANSWER_LEVELS = {
+    "quick": {
+        "label": "Quick",
+        "instruction": (
+            "Answer in one short sentence — the fewest words that fully "
+            "answer it, sayable out loud in under 3 seconds."
+        ),
+        "max_tokens": 60,
+    },
+    "medium": {
+        "label": "Medium",
+        "instruction": (
+            "Answer in two to three concise sentences — enough to be "
+            "useful without rambling."
+        ),
+        "max_tokens": 150,
+    },
+    "detailed": {
+        "label": "Detailed",
+        "instruction": (
+            "Answer more fully — a short paragraph is fine if it adds "
+            "real value, but stay focused and avoid padding."
+        ),
+        "max_tokens": 350,
+    },
+}
+
+
+def normalize_level(level):
+    """Any unrecognized/missing level quietly falls back to the default
+    rather than raising — a malformed client message shouldn't be able to
+    break suggestion generation."""
+    return level if level in ANSWER_LEVELS else DEFAULT_ANSWER_LEVEL
+
+
+def get_max_tokens(level):
+    """
+    Per-level token budget, overridable via env as
+    LLM_MAX_TOKENS_<LEVEL> (e.g. LLM_MAX_TOKENS_QUICK). Falls back to
+    ANSWER_LEVELS' hardcoded default if the env var isn't set.
+    """
+    level = normalize_level(level)
+    env_val = os.environ.get(f"LLM_MAX_TOKENS_{level.upper()}")
+    if env_val:
+        return int(env_val)
+    return ANSWER_LEVELS[level]["max_tokens"]
+
+
+def build_suggestion_prompt(question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL) -> str:
     """
     question: the extracted question text (Extraction.text where
     type == "question") to suggest an answer for.
@@ -27,11 +88,15 @@ def build_suggestion_prompt(question: str, context_turns: list[dict]) -> str:
     6) — this is conversation context only, not retrieved facts, so the
     model is working from what it already knows plus what's been said out
     loud in this session.
+    level: one of ANSWER_LEVELS' keys (Phase 4) — invalid/missing values
+    are normalized to DEFAULT_ANSWER_LEVEL rather than raising.
     """
+    level = normalize_level(level)
     if context_turns:
         context_lines = "\n".join(f"{t['speaker']}: {t['text']}" for t in context_turns)
         context_block = f"Recent conversation:\n{context_lines}\n\n"
     else:
         context_block = ""
 
-    return f"{context_block}Question just asked: {question}\n\nSuggested answer:"
+    instruction = ANSWER_LEVELS[level]["instruction"]
+    return f"{context_block}Question just asked: {question}\n\n{instruction}\n\nSuggested answer:"
