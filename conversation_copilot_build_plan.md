@@ -323,6 +323,20 @@ Given the model-size lever is likely capped by RAM rather than choice, added a f
 
 **This means a fresh, empty database on first start after deploying this fix** — the old in-tree `db.sqlite3`'s data doesn't carry over automatically (fine at this stage; it's test data). **Also worth checking before anything else:** whether `server/.env`/`.env.production` were ever actually committed to git — if so, the Groq key and HF token should be treated as exposed and rotated, since nothing was stopping secrets from being tracked before this fix either.
 
+**Update 7 — verified clean on the new volume, deployed live.** Full migration history applied correctly on first start (`0001_initial` through `0003_suggestion`, all OK). Three live questions tested end-to-end: all answered by Groq in under 600ms, all persisted, all rendered correctly in the Flutter UI with latency shown. **Phase 3's actual goal is confirmed done.**
+
+Two remaining quality gaps, distinct from each other and from Update 5's RAM ceiling:
+- **STT word errors persist** ("blackest" → "blockest") — same known, VM-bounded constraint as before, no new information.
+- **New: unfiltered conversation context can produce wrong answers.** "Who is the Blackest Man Alive?" got answered "August." — traced to `ai/prompts.py` including the last 6 raw turns unfiltered; an earlier stray turn (`B: August.`) was still in that window and the model latched onto it instead of the actual question. Only surfaced because testing involved repeating the same phrase several times, filling context with noise a normal conversation likely wouldn't have — but the underlying gap (no filtering of short/irrelevant fragments from context) is real regardless.
+
+### Small notes — what's actually left
+
+- [x] **Context filtering (cheap, worth doing):** `_recent_turns_context` (`server/audio/consumers.py`) now over-fetches (`limit * 3`) and drops turns under `CONTEXT_MIN_WORDS` words (default 3, new env var — `.env.example`/`.env.production.example`) before trimming to `limit`, so a run of short/fragment turns can't starve the context window below `limit` usable turns. Fixes the "August." class of bug — a stray one-word turn getting latched onto as the answer to an unrelated question. `ai/prompts.py` untouched; this is fetch-time policy, not a formatting concern.
+- [ ] **Extraction accuracy (bigger, already-decided-to-defer):** regex still misses implied questions with no `?`/wh-word (e.g. "the capital of Minnesota."). Options were laid out earlier (stay with regex vs. move to Groq-based extraction) — no decision made yet, not urgent.
+- [ ] **Whisper accuracy ceiling:** `small` + `beam_size=5` (+ optional `WHISPER_INITIAL_PROMPT`) is what this VM can sustain; `medium`/`large` caused likely-OOM crashes. Real fix is more RAM or less BizYangu contention, not further tuning — infra decision, deliberately deferred.
+- [ ] **`server/db.sqlite3.bak`** left on the VM from the volume migration — harmless, safe to delete whenever.
+- [x] Flutter no longer shows "Live Session (**Phase 1**)" in the UI — retitled to "Live Session" in `live_session_screen.dart`.
+
 ### Phase 4 — Teleprompter UI
 
 - [ ] Quick / Medium / Detailed answer level switching
@@ -404,3 +418,11 @@ Concrete first steps, in order:
 - **Domain/TLS:** no domain yet, using the raw IP for now. **Resolved via [sslip.io](https://sslip.io)**: `145-241-102-99.sslip.io` resolves to the VM's IP with zero setup, and Caddy's automatic HTTPS will issue a real Let's Encrypt cert against it directly from the Caddyfile (no certbot step needed) — gives real `wss://` for free without buying a domain. Swap to a real domain later by just changing the Caddyfile site address.
 - **VM sizing / LLM strategy:** 5.8GB RAM / 2 vCPU rules out a 7–8B local model comfortably fitting alongside Django/Redis/Whisper. **Resolved as hybrid:** local **3B-class** model (`Qwen2.5-3B-Instruct` or `Llama-3.2-3B-Instruct`, Q4_K_M GGUF) as the always-available, no-network fallback and for Phase 2 extraction; **Groq's free tier** (LPU hardware, genuinely free, not trial-limited) as the primary path for actual suggestion generation — far faster than 2 vCPUs could do locally even if RAM allowed a bigger model. This means **Phase 7 (Hybrid AI Router) moves up and merges into Phase 3** rather than staying a late-stage phase — see Phase 3 update below.
 - **Deploy mechanism:** SSH+rsync straight onto the VM vs. push image to a container registry and pull — rsync is simpler for a single-VM setup with no orchestration needs
+
+---
+
+## 7. Delivery Convention
+
+- **Every handoff is a ZIP, structurally matching the original upload.** Root folder name `Conversation-copilot-claude-copy/`, same relative paths as the source zip (`server/...`, `flutter_app/...`, `infra/...`, this file at the root, etc.) — not a flat dump of individual changed files. Build caches, virtualenvs, `__pycache__/`, `.dart_tool/`, `.gradle/`, `.idea/`, `node_modules/`, and `db.sqlite3` are excluded, same as they'd be excluded from git.
+- **Every ZIP is accompanied by a one-sentence commit message** summarizing that delivery's change, suitable for pasting straight into `git commit -m "..."`.
+- This applies from here onward for all future sessions on this project, not just the change that introduced this note.

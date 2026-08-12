@@ -192,7 +192,7 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Live Session (Phase 1)')),
+      appBar: AppBar(title: const Text('Live Session')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(

@@ -336,11 +336,30 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         dicts — used to ground the suggestion prompt (see ai/prompts.py).
         Plain sync ORM query pushed to a thread rather than using the
         async ORM, matching the pattern used everywhere else in this file.
+
+        Filters out very short/fragment turns (default: under 3 words)
+        before returning. Rationale (build plan, "Small notes — what's
+        actually left"): a stray one-word turn like "August." sitting in
+        this window can get latched onto by the model as the answer to an
+        unrelated question, even though a real conversation's context
+        should have made the actual answer obvious. Filtering happens
+        here rather than in ai/prompts.py so the fetch and the policy
+        live together, and so prompts.py stays a pure formatter.
+
+        Note: filtering happens *before* `limit` is applied to the
+        underlying query — we over-fetch by a small multiple and drop
+        fragments client-side, so a run of short turns doesn't quietly
+        starve the context window down to fewer than `limit` usable
+        turns.
         """
+        min_words = int(os.environ.get("CONTEXT_MIN_WORDS", "3"))
+        overfetch = limit * 3
 
         def _fetch():
-            qs = self.session.turns.order_by("-started_at")[:limit]
-            return [{"speaker": t.speaker, "text": t.text} for t in reversed(list(qs))]
+            qs = self.session.turns.order_by("-started_at")[:overfetch]
+            turns = [{"speaker": t.speaker, "text": t.text} for t in reversed(list(qs))]
+            filtered = [t for t in turns if len(t["text"].split()) >= min_words]
+            return filtered[-limit:]
 
         return await asyncio.to_thread(_fetch)
 
