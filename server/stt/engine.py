@@ -88,10 +88,25 @@ class WhisperEngine:
         # beam search is more likely to avoid). Configurable per-call so it
         # can be tuned/benchmarked without a code change.
         beam_size = int(os.environ.get("WHISPER_BEAM_SIZE", "5"))
+
+        # initial_prompt biases Whisper toward expected vocabulary/spelling
+        # without changing the model or costing any extra RAM/latency —
+        # unlike beam_size/model_size, this is free. Doesn't select a
+        # dialect (Whisper has no separate "Kenyan English"/"UK English"
+        # mode — language=en already covers the accent range on its own);
+        # it just nudges word choice for terms the model might otherwise
+        # mishear, e.g. turn 7/9 from the 2026-08-11 test session came out
+        # as "beats, like 5 of them, least them" and "an nplus query"
+        # instead of the (probable) intended technical terms. Empty by
+        # default so this is opt-in, not a hardcoded assumption about what
+        # any given deployment's conversations are about.
+        initial_prompt = os.environ.get("WHISPER_INITIAL_PROMPT", "").strip() or None
+
         segments, _info = self.model.transcribe(
             audio,
             language=effective_language,
             beam_size=beam_size,
+            initial_prompt=initial_prompt,
             vad_filter=False,  # we run our own VAD upstream (audio/vad.py)
             condition_on_previous_text=False,
         )
