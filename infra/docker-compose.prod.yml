@@ -53,8 +53,13 @@ services:
       - sqlite_data:/data
       - ../index.html:/frontend/index.html:ro
       - hf_cache:/root/.cache/huggingface
+    # Model warm-up (VAD/Whisper/local LLM) now happens in-process inside
+    # copilot/asgi.py, before Daphne binds its port — no longer a separate
+    # `python manage.py warmup_models` step here, since that used to run
+    # in its own process, exit, and throw the loaded models away (see
+    # server/audio/warmup.py's docstring).
     command: >
-      sh -c "python manage.py migrate && python manage.py warmup_models && daphne -b 0.0.0.0 -p 8000 copilot.asgi:application"
+      sh -c "python manage.py migrate && daphne -b 0.0.0.0 -p 8000 copilot.asgi:application"
     # No host port mapping — only reachable from other containers on
     # networks this service joins, i.e. bizyangu_default (below), which
     # is where BizYangu's Caddy container lives.

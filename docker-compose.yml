@@ -39,8 +39,13 @@ services:
       # (100s of MB) silently re-downloads on the next mic test, which is
       # what was actually happening (not the pip packages re-downloading).
       - hf_cache:/root/.cache/huggingface
+    # Model warm-up (VAD/Whisper/local LLM) now happens in-process inside
+    # copilot/asgi.py, before Daphne binds its port — no longer a separate
+    # `python manage.py warmup_models` step here, since that used to run
+    # in its own process, exit, and throw the loaded models away (see
+    # server/audio/warmup.py's docstring).
     command: >
-      sh -c "python manage.py migrate && python manage.py warmup_models && daphne -b 0.0.0.0 -p 8000 copilot.asgi:application"
+      sh -c "python manage.py migrate && daphne -b 0.0.0.0 -p 8000 copilot.asgi:application"
 
   # Cloudflare Tunnel — run `cloudflared tunnel login` and create a named
   # tunnel first, then point TUNNEL_TOKEN at it in server/.env.

@@ -73,9 +73,8 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
   final _mic = MicCapture();
   final _entries = <_TranscriptEntry>[];
   final _scrollController = ScrollController();
-  // Full, continuous transcript — every finalized turn appended in order,
-  // plus the in-progress partial trailing at the end while someone's still
-  // speaking. Distinct from `_entries` above: `_entries` is the existing
+  // Full, continuous transcript — every finalized turn appended in order.
+  // Distinct from `_entries` above: `_entries` is the existing
   // per-turn/per-suggestion box (each final turn its own bubble, badges,
   // suggestion cards interleaved); this is the plain, unbroken "everything
   // that's been said" view the transcript box shows.
@@ -87,7 +86,6 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
   StreamSubscription? _doneSub;
 
   String? _sessionId;
-  String? _partialText;
   bool _connected = false;
   bool _recording = false;
   String _status = 'Not connected.';
@@ -184,14 +182,8 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
           setState(() => _answerLevel = matched.first);
         }
         break;
-      case 'partial':
-        setState(() => _partialText = data['text'] as String?);
-        _scrollToEnd();
-        _scrollFullTranscriptToEnd();
-        break;
       case 'final':
         setState(() {
-          _partialText = null;
           final speaker = data['speaker'] as String? ?? '?';
           final text = data['text'] as String? ?? '';
           _entries.add(_TranscriptEntry.finalTurn(
@@ -365,15 +357,6 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
                           .copyWith(fontSize: 13, height: 1.4),
                       children: [
                         TextSpan(text: _fullTranscriptLines.join('\n')),
-                        if (_partialText != null)
-                          TextSpan(
-                            text: (_fullTranscriptLines.isEmpty ? '' : '\n') +
-                                _partialText!,
-                            style: TextStyle(
-                              color: Colors.grey.shade600,
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
                       ],
                     ),
                   ),

@@ -16,7 +16,7 @@ class CopilotSocket {
   final _errorsController = StreamController<Object>.broadcast();
   final _doneController = StreamController<void>.broadcast();
 
-  /// Parsed JSON messages from the server: session_started, partial,
+  /// Parsed JSON messages from the server: session_started,
   /// final, extraction, suggestion, session_ended.
   Stream<Map<String, dynamic>> get messages => _messagesController.stream;
   Stream<Object> get errors => _errorsController.stream;

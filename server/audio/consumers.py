@@ -73,8 +73,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         binary WebSocket frames. Any chunk size is fine — frames are
         re-buffered into fixed 512-sample windows for VAD internally.
       - Server runs VAD frame-by-frame:
-          - on speech -> buffers audio, periodically emits
-            {"type": "partial", "text": "..."} on the growing segment
+          - on speech -> buffers audio
           - on ~600ms of silence following speech -> finalizes the
             segment: runs STT, labels a speaker, persists a Turn, and
             emits {"type": "final", "turn_id": ..., "speaker": ...,
@@ -83,27 +82,33 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
       - Client may send {"type": "end_session"} as a text frame to close
         out the session explicitly (flushes any in-progress segment).
 
-    Deliberately NOT optimized yet: VAD and STT calls run per-frame /
-    per-partial via asyncio.to_thread rather than a batched or truly
-    streaming decode. Phase 1's goal is a clean, correct end-to-end pipe;
-    latency/throughput tuning is a Phase 2 concern once extraction
-    accuracy work starts anyway.
+    No "partial"/live-preview transcript is sent while someone is mid-turn
+    (there used to be one — see the removal note where PARTIAL_INTERVAL_S
+    used to live, below). VAD itself still runs per-frame via
+    asyncio.to_thread, which is cheap; STT only runs once per finalized
+    segment.
     """
 
     # Config (env-overridable — see server/.env.example)
     SILENCE_S = float(os.environ.get("VAD_SILENCE_MS", "600")) / 1000.0
     MIN_SEGMENT_S = float(os.environ.get("MIN_SEGMENT_MS", "250")) / 1000.0
-    PARTIAL_INTERVAL_S = float(os.environ.get("PARTIAL_INTERVAL_MS", "1200")) / 1000.0
-    # Partials re-transcribe from scratch each time (Whisper has no true
-    # streaming decode here — see the class docstring's "Deliberately NOT
-    # optimized yet" note). Without a cap, a long turn's Nth partial
-    # re-decodes the *entire* accumulated segment, so cost grows with turn
-    # length and every partial gets slower the longer someone talks. Partials
-    # are UI-only (the final transcript at silence still decodes the whole
-    # trimmed segment — see _finalize_segment) so windowing them to only the
-    # most recent audio is safe: it can only affect the live "still typing"
-    # preview, never the persisted Turn text or anything extraction reads.
-    PARTIAL_WINDOW_S = float(os.environ.get("PARTIAL_WINDOW_MS", "8000")) / 1000.0
+
+    # Removed: PARTIAL_INTERVAL_S / PARTIAL_WINDOW_S + the "partial"
+    # message they drove. Partials re-decoded the *entire* accumulated
+    # segment through local Whisper at beam_size=5 every ~1.2s for as
+    # long as someone kept talking — and did so on the same 2 vCPUs as
+    # everything else. They were purely a cosmetic "still typing" UI
+    # touch (the extraction/suggestion pipeline only ever reads the
+    # final segment, never a partial), so that CPU was being spent on a
+    # nicety while starving the thing that actually matters: how fast a
+    # real suggestion shows up. That's also the direct cause of lag that
+    # *compounded* the longer a conversation ran, since every frame on a
+    # connection is awaited in order — once partial-decoding fell behind
+    # real-time, there was nothing to let it catch back up. If live
+    # partial transcripts are wanted again later, do it as an actual
+    # incremental/streaming decode rather than a full-window re-decode
+    # on a timer.
+    BACKPRESSURE_MAX_BACKLOG_S = float(os.environ.get("BACKPRESSURE_MAX_BACKLOG_MS", "2000")) / 1000.0
 
     async def connect(self):
         session_id = self.scope["url_route"]["kwargs"].get("session_id")
@@ -116,7 +121,6 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         self.segment_gap_s = 0.0
         self.silence_tail_s = 0.0
         self.gap_since_last_turn_s = 0.0
-        self.speech_time_since_partial_s = 0.0
         self.speaker_labeler = speaker_module.NaivePauseSpeakerLabeler()
         self.last_turn_text = None  # Phase 2: topic_change needs the previous turn's text
         # Phase 4: answer-level switching. Session-wide, not per-question —
@@ -188,6 +192,33 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         from stt.engine import pcm16_bytes_to_float32
 
         self._pending += bytes_data
+
+        # Backpressure: every frame on this connection is awaited in
+        # order (see class docstring), so if processing ever falls
+        # behind the rate audio is arriving at — a slow box, CPU
+        # contention from another session, a VAD hiccup — _pending would
+        # otherwise grow without bound and every subsequent frame stays
+        # exactly as far behind real time as the last one, forever. Cap
+        # the backlog instead: once more than BACKPRESSURE_MAX_BACKLOG_S
+        # of raw audio is buffered, drop the oldest excess (frame-aligned)
+        # so this connection resyncs to *recent* audio instead of slowly
+        # working through an ever-growing queue of stale audio. This
+        # trades a small chunk of audio (skipped VAD/possible mid-word
+        # cut) for bounded, self-recovering latency.
+        max_backlog_bytes = round(self.BACKPRESSURE_MAX_BACKLOG_S * SAMPLE_RATE) * 2  # int16 = 2 bytes/sample
+        if len(self._pending) > max_backlog_bytes:
+            excess = len(self._pending) - max_backlog_bytes
+            excess -= excess % FRAME_BYTES  # keep the buffer frame-aligned
+            if excess > 0:
+                logger.warning(
+                    "session %s: audio backlog exceeded %.1fs, dropping ~%.2fs "
+                    "of buffered audio to catch up",
+                    getattr(self.session, "id", "?"),
+                    self.BACKPRESSURE_MAX_BACKLOG_S,
+                    excess / (SAMPLE_RATE * 2),
+                )
+                self._pending = self._pending[excess:]
+
         while len(self._pending) >= FRAME_BYTES:
             frame_bytes = self._pending[:FRAME_BYTES]
             self._pending = self._pending[FRAME_BYTES:]
@@ -203,15 +234,9 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                 self.segment_frames = []
                 self.segment_start_wall = timezone.now()
                 self.segment_gap_s = self.gap_since_last_turn_s
-                self.speech_time_since_partial_s = 0.0
 
             self.segment_frames.append(frame_f32)
             self.silence_tail_s = 0.0
-            self.speech_time_since_partial_s += FRAME_DURATION_S
-
-            if self.speech_time_since_partial_s >= self.PARTIAL_INTERVAL_S:
-                await self._emit_partial()
-                self.speech_time_since_partial_s = 0.0
         else:
             if self.speech_active:
                 self.segment_frames.append(frame_f32)
@@ -220,22 +245,6 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                     await self._finalize_segment()
             else:
                 self.gap_since_last_turn_s += FRAME_DURATION_S
-
-    async def _emit_partial(self):
-        from stt.engine import get_engine
-
-        if not self.segment_frames:
-            return
-        # Window to the last PARTIAL_WINDOW_S seconds only — see the
-        # PARTIAL_WINDOW_S class attribute for why this is safe and
-        # necessary. round()-based frame count, floor of 1 frame so a
-        # misconfigured (e.g. 0) window doesn't feed Whisper an empty array.
-        window_frame_count = max(1, round(self.PARTIAL_WINDOW_S / FRAME_DURATION_S))
-        windowed_frames = self.segment_frames[-window_frame_count:]
-        audio_np = np.concatenate(windowed_frames)
-        result = await asyncio.to_thread(get_engine().transcribe, audio_np)
-        if result["text"]:
-            await self.send(text_data=json.dumps({"type": "partial", "text": result["text"]}))
 
     async def _finalize_segment(self):
         from stt.cloud_router import get_final_transcription

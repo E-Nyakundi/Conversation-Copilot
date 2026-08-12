@@ -217,12 +217,6 @@
       margin-top: 4px;
     }
 
-    .partial {
-      font-style: italic;
-      color: #999;
-      opacity: 0.7;
-    }
-
     .debug-section {
       border-top: 1px solid #e0e0e0;
       padding-top: 16px;
@@ -285,7 +279,6 @@
   <script>
     let ws, audioCtx, sourceNode, analyser, processorNode, mediaStream;
     let sessionId = null;
-    let partialEl = null;
     const TARGET_SAMPLE_RATE = 16000;
     const debugLogs = [];
     const MAX_DEBUG_LOGS = 10;
@@ -342,8 +335,6 @@
             sessionId = data.session_id;
             addDebugLog(`Session started: ${sessionId}`);
             setStatus(`Session: ${sessionId.substring(0, 8)}...`, true);
-          } else if (data.type === "partial") {
-            renderPartial(data.text);
           } else if (data.type === "final") {
             renderFinal(data);
           } else if (data.type === "session_ended") {
@@ -373,24 +364,7 @@
       };
     }
 
-    function renderPartial(text) {
-      if (!partialEl) {
-        partialEl = document.createElement("div");
-        partialEl.className = "turn partial";
-        if (transcriptEl.firstChild?.classList.contains("transcript-empty")) {
-          transcriptEl.innerHTML = "";
-        }
-        transcriptEl.appendChild(partialEl);
-      }
-      partialEl.textContent = text;
-      transcriptEl.scrollTop = transcriptEl.scrollHeight;
-    }
-
     function renderFinal(data) {
-      if (partialEl) {
-        partialEl.remove();
-        partialEl = null;
-      }
       const div = document.createElement("div");
       div.className = "turn";
       const conf =

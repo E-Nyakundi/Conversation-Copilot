@@ -12,7 +12,6 @@
     .turn { margin-bottom: 10px; }
     .turn .speaker { font-weight: bold; }
     .turn .conf { color: #999; font-size: 11px; margin-left: 6px; }
-    .partial { color: #999; font-style: italic; }
     .suggestion { margin: 6px 0 10px 16px; padding: 8px 10px; background: #eef6ff; border-left: 3px solid #4a90d9; border-radius: 4px; font-size: 13px; }
     .suggestion .label { font-weight: bold; color: #2b5f94; }
     .suggestion .meta { color: #888; font-size: 11px; margin-left: 6px; }
@@ -36,7 +35,6 @@
   <script>
     let ws, audioCtx, sourceNode, processorNode, mediaStream;
     let sessionId = null;
-    let partialEl = null;
     const TARGET_SAMPLE_RATE = 16000;
 
     const statusEl = document.getElementById('status');
@@ -59,8 +57,6 @@
         if (data.type === 'session_started') {
           sessionId = data.session_id;
           setStatus(`Session: ${sessionId}`);
-        } else if (data.type === 'partial') {
-          renderPartial(data.text);
         } else if (data.type === 'final') {
           renderFinal(data);
         } else if (data.type === 'suggestion') {
@@ -79,21 +75,7 @@
       };
     }
 
-    function renderPartial(text) {
-      if (!partialEl) {
-        partialEl = document.createElement('div');
-        partialEl.className = 'turn partial';
-        transcriptEl.appendChild(partialEl);
-      }
-      partialEl.textContent = text;
-      transcriptEl.scrollTop = transcriptEl.scrollHeight;
-    }
-
     function renderFinal(data) {
-      if (partialEl) {
-        partialEl.remove();
-        partialEl = null;
-      }
       const div = document.createElement('div');
       div.className = 'turn';
       const conf = data.confidence !== null && data.confidence !== undefined

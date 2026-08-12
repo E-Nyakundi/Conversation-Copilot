@@ -6,12 +6,10 @@ missing key, or rate limit. Mirrors ai/cloud_router.py's shape exactly
 the two hybrid paths in this app stay consistent.
 
 Deliberately used for FINAL segments only (audio/consumers.py's
-_finalize_segment), not partials (_emit_partial). Partials fire every
-PARTIAL_INTERVAL_S while someone is still mid-sentence — routing those
-to a network call would (a) burn through Groq's rate limit fast on
-short/frequent windows, and (b) add round-trip latency to the one thing
-that needs to feel instant. Local Whisper stays wired directly into
-_emit_partial; this module only replaces the _finalize_segment call.
+_finalize_segment) — that's the only STT call left in the pipeline now
+(the old live "partial" preview, which re-decoded locally on a timer,
+was removed; see the note where PARTIAL_INTERVAL_S used to live in
+audio/consumers.py for why).
 
 Provider selection is left abstracted (STT_PROVIDER env var, default
 "groq") even though Groq is the only cloud path implemented right now —
