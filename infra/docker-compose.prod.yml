@@ -40,12 +40,17 @@ services:
       - ../server/.env.production
     environment:
       - REDIS_URL=redis://redis:6379/0
+      # See copilot/settings.py's DATABASES comment — keeps the live db
+      # out of the git-tracked/bind-mounted source tree entirely, so a
+      # `git pull` on the host can never silently overwrite it again.
+      - SQLITE_DB_PATH=/data/db.sqlite3
     depends_on:
       redis:
         condition: service_healthy
     volumes:
       - ../server:/app
       - media_data:/app/media
+      - sqlite_data:/data
       - ../index.html:/frontend/index.html:ro
       - hf_cache:/root/.cache/huggingface
     command: >
@@ -70,3 +75,4 @@ volumes:
   redis_data:
   media_data:
   hf_cache:
+  sqlite_data:

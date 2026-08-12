@@ -1,0 +1,32 @@
+# Python / Django (server/) — no .gitignore covered this codebase at all
+# before now. The .gitignore files elsewhere in this repo are all
+# Flutter-generated and don't touch server/.
+
+# Local/live databases — see copilot/settings.py's DATABASES comment and
+# infra/docker-compose.prod.yml: these should never be committed. A
+# tracked db.sqlite3 is what caused a `git pull` on the VM to silently
+# overwrite the live production database out from under a running
+# container (2026-08-12). The Docker setup now keeps the real db in a
+# separate volume regardless, but this stops it from being tracked in the
+# first place too.
+server/db.sqlite3
+*.sqlite3
+
+# Secrets — GROQ_API_KEY, HF_TOKEN, etc. live in these. Never commit them;
+# server/.env.example and server/.env.production.example (tracked,
+# intentionally) are the templates to copy from instead.
+server/.env
+server/.env.production
+server/.env.*.local
+
+# Python
+server/__pycache__/
+server/**/__pycache__/
+*.pyc
+*.pyo
+server/*.egg-info/
+server/.venv/
+server/venv/
+
+# HF model cache, if ever downloaded outside the Docker volume
+server/.cache/

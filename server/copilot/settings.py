@@ -67,7 +67,19 @@ CHANNEL_LAYERS = {
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        # Configurable so Docker deployments can point this at a dedicated
+        # volume (SQLITE_DB_PATH=/data/db.sqlite3, set in the compose
+        # files) instead of the default below. That default previously
+        # resolved to BASE_DIR/db.sqlite3 — server/db.sqlite3 — which is
+        # INSIDE the bind-mounted, git-tracked source tree (../server:/app
+        # in both compose files). That meant the live database was really
+        # just a plain file in the working directory: a `git pull` on the
+        # host silently overwrote it under a running container mid-session
+        # (no crash, no restart — the exact "table just vanished hours in"
+        # bug from 2026-08-12 testing). Moving it to its own volume makes
+        # that structurally impossible instead of relying on remembering
+        # not to touch it.
+        "NAME": os.environ.get("SQLITE_DB_PATH", str(BASE_DIR / "db.sqlite3")),
     }
 }
 

@@ -316,6 +316,13 @@ Given the model-size lever is likely capped by RAM rather than choice, added a f
 
 **Current state, good enough to move forward on:** `small` + `beam_size=5` (+ optionally `WHISPER_INITIAL_PROMPT`) is the accuracy/stability ceiling this VM supports without either more RAM or reducing BizYangu's concurrent footprint — a real infrastructure question, not a tuning one, and deliberately deferred per earlier discussion. Phase 3's actual goal (extraction → Groq suggestion → persisted, end-to-end) is confirmed working. **Moving on from this checkpoint.**
 
+**Update 6 — real data-loss bug, not a missing migration.** The `no such table: conversation_suggestion` error came back on 2026-08-12, hours into an already-running container that had processed suggestions successfully earlier in the same session. Root cause: `db.sqlite3` lived at `server/db.sqlite3` — *inside* the bind-mounted, git-tracked source directory (`../server:/app` / `./server:/app` in both compose files), with no `.gitignore` anywhere in the repo covering it. Syncing code between local and the VM via git silently overwrote the live production database file out from under the running container — no crash, no restart, no error, since Django was reading that exact path the whole time. Fixed structurally, not just documented:
+- `copilot/settings.py`: `DATABASES` now reads `SQLITE_DB_PATH` from env, defaulting to the old in-tree path for plain local dev without Docker.
+- Both `docker-compose.yml` and `infra/docker-compose.prod.yml`: added a dedicated `sqlite_data` volume, mounted at `/data`, with `SQLITE_DB_PATH=/data/db.sqlite3` — outside the bind-mounted source tree entirely, so a `git pull` can never touch it again regardless of `.gitignore`.
+- Added a root `.gitignore` (none existed for the Python/`server/` codebase at all) covering `db.sqlite3`, `.env`/`.env.production`, `__pycache__/`, etc.
+
+**This means a fresh, empty database on first start after deploying this fix** — the old in-tree `db.sqlite3`'s data doesn't carry over automatically (fine at this stage; it's test data). **Also worth checking before anything else:** whether `server/.env`/`.env.production` were ever actually committed to git — if so, the Groq key and HF token should be treated as exposed and rotated, since nothing was stopping secrets from being tracked before this fix either.
+
 ### Phase 4 — Teleprompter UI
 
 - [ ] Quick / Medium / Detailed answer level switching

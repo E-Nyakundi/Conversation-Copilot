@@ -17,11 +17,16 @@ services:
       - ./server/.env
     environment:
       - REDIS_URL=redis://redis:6379/0
+      # See copilot/settings.py's DATABASES comment / infra/docker-compose.prod.yml
+      # for why — keeps the dev db out of the git-tracked/bind-mounted
+      # source tree too, same reasoning as prod.
+      - SQLITE_DB_PATH=/data/db.sqlite3
     ports:
       - "8000:8000"
     volumes:
       - ./server:/app
       - media_data:/app/media
+      - sqlite_data:/data
       # ./server is the only thing mounted into the container, so
       # index.html (at the repo root, one level above server/) isn't
       # visible to Django at all without this. Mounted read-only at a
@@ -54,3 +59,4 @@ volumes:
   redis_data:
   media_data:
   hf_cache:
+  sqlite_data:
