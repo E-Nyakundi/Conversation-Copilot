@@ -238,7 +238,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             await self.send(text_data=json.dumps({"type": "partial", "text": result["text"]}))
 
     async def _finalize_segment(self):
-        from stt.engine import get_engine
+        from stt.cloud_router import get_final_transcription
 
         if not self.speech_active or not self.segment_frames:
             self.speech_active = False
@@ -265,7 +265,12 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             self.gap_since_last_turn_s = 0.0
             return
 
-        result = await asyncio.to_thread(get_engine().transcribe, audio_np)
+        # get_final_transcription doesn't share stt.engine's "__default__"
+        # sentinel/env plumbing (see stt/cloud_router.py docstring) — read
+        # WHISPER_LANGUAGE here so the Groq path honors the same forced-
+        # language behavior the local engine defaults to (env unset -> "en").
+        language = os.environ.get("WHISPER_LANGUAGE", "en").strip() or None
+        result = await asyncio.to_thread(get_final_transcription, audio_np, language)
         text = result["text"]
         if not text:
             self.gap_since_last_turn_s = 0.0
