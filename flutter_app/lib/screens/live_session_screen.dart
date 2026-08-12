@@ -73,6 +73,14 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
   final _mic = MicCapture();
   final _entries = <_TranscriptEntry>[];
   final _scrollController = ScrollController();
+  // Full, continuous transcript — every finalized turn appended in order,
+  // plus the in-progress partial trailing at the end while someone's still
+  // speaking. Distinct from `_entries` above: `_entries` is the existing
+  // per-turn/per-suggestion box (each final turn its own bubble, badges,
+  // suggestion cards interleaved); this is the plain, unbroken "everything
+  // that's been said" view the transcript box shows.
+  final List<String> _fullTranscriptLines = [];
+  final _fullTranscriptScrollController = ScrollController();
 
   StreamSubscription? _msgSub;
   StreamSubscription? _errSub;
@@ -101,6 +109,18 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _scrollFullTranscriptToEnd() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_fullTranscriptScrollController.hasClients) {
+        _fullTranscriptScrollController.animateTo(
+          _fullTranscriptScrollController.position.maxScrollExtent,
           duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
         );
@@ -142,6 +162,11 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
         setState(() {
           _sessionId = data['session_id'] as String?;
           _status = 'Session: $_sessionId';
+          // A fresh WS connection means a fresh (or resumed-empty, from the
+          // server's point of view) transcript stream — don't carry stale
+          // text over from a previous connect/disconnect cycle in this
+          // widget's lifetime.
+          _fullTranscriptLines.clear();
         });
         // Phase 4: server defaults to Medium too, but this covers the
         // case where the user picked a different level before hitting
@@ -162,17 +187,27 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
       case 'partial':
         setState(() => _partialText = data['text'] as String?);
         _scrollToEnd();
+        _scrollFullTranscriptToEnd();
         break;
       case 'final':
         setState(() {
           _partialText = null;
+          final speaker = data['speaker'] as String? ?? '?';
+          final text = data['text'] as String? ?? '';
           _entries.add(_TranscriptEntry.finalTurn(
-            speaker: data['speaker'] as String? ?? '?',
-            text: data['text'] as String? ?? '',
+            speaker: speaker,
+            text: text,
             confidence: (data['confidence'] as num?)?.toDouble(),
           ));
+          // Full transcript gets the raw finalized text, unfiltered and
+          // un-badged — this box is meant to be "everything said", not a
+          // curated/extracted view. Speaker label kept as a light prefix
+          // since it costs nothing and helps readability, but nothing is
+          // trimmed, scored, or left out.
+          _fullTranscriptLines.add('$speaker: $text');
         });
         _scrollToEnd();
+        _scrollFullTranscriptToEnd();
         break;
       case 'suggestion':
         // Phase 3: arrives asynchronously, some time after the `final`
@@ -242,6 +277,7 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
     _socket.dispose();
     _urlController.dispose();
     _scrollController.dispose();
+    _fullTranscriptScrollController.dispose();
     super.dispose();
   }
 
@@ -309,7 +345,47 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
               ],
             ),
             const SizedBox(height: 12),
+            const Text('Full transcript',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+            const SizedBox(height: 4),
             Expanded(
+              flex: 2,
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.grey.shade300),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                padding: const EdgeInsets.all(8),
+                child: SingleChildScrollView(
+                  controller: _fullTranscriptScrollController,
+                  child: RichText(
+                    text: TextSpan(
+                      style: DefaultTextStyle.of(context)
+                          .style
+                          .copyWith(height: 1.4),
+                      children: [
+                        TextSpan(text: _fullTranscriptLines.join('\n')),
+                        if (_partialText != null)
+                          TextSpan(
+                            text: (_fullTranscriptLines.isEmpty ? '' : '\n') +
+                                _partialText!,
+                            style: TextStyle(
+                              color: Colors.grey.shade600,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text('Extracted questions & suggestions',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+            const SizedBox(height: 4),
+            Expanded(
+              flex: 3,
               child: Container(
                 decoration: BoxDecoration(
                   border: Border.all(color: Colors.grey.shade300),
@@ -318,20 +394,8 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
                 padding: const EdgeInsets.all(8),
                 child: ListView.builder(
                   controller: _scrollController,
-                  itemCount: _entries.length + (_partialText != null ? 1 : 0),
+                  itemCount: _entries.length,
                   itemBuilder: (context, index) {
-                    if (index == _entries.length && _partialText != null) {
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Text(
-                          _partialText!,
-                          style: TextStyle(
-                            color: Colors.grey.shade600,
-                            fontStyle: FontStyle.italic,
-                          ),
-                        ),
-                      );
-                    }
                     final entry = _entries[index];
                     if (entry.kind == _EntryKind.finalTurn) {
                       final conf =

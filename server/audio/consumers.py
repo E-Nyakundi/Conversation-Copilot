@@ -94,6 +94,16 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
     SILENCE_S = float(os.environ.get("VAD_SILENCE_MS", "600")) / 1000.0
     MIN_SEGMENT_S = float(os.environ.get("MIN_SEGMENT_MS", "250")) / 1000.0
     PARTIAL_INTERVAL_S = float(os.environ.get("PARTIAL_INTERVAL_MS", "1200")) / 1000.0
+    # Partials re-transcribe from scratch each time (Whisper has no true
+    # streaming decode here — see the class docstring's "Deliberately NOT
+    # optimized yet" note). Without a cap, a long turn's Nth partial
+    # re-decodes the *entire* accumulated segment, so cost grows with turn
+    # length and every partial gets slower the longer someone talks. Partials
+    # are UI-only (the final transcript at silence still decodes the whole
+    # trimmed segment — see _finalize_segment) so windowing them to only the
+    # most recent audio is safe: it can only affect the live "still typing"
+    # preview, never the persisted Turn text or anything extraction reads.
+    PARTIAL_WINDOW_S = float(os.environ.get("PARTIAL_WINDOW_MS", "8000")) / 1000.0
 
     async def connect(self):
         session_id = self.scope["url_route"]["kwargs"].get("session_id")
@@ -216,7 +226,13 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
 
         if not self.segment_frames:
             return
-        audio_np = np.concatenate(self.segment_frames)
+        # Window to the last PARTIAL_WINDOW_S seconds only — see the
+        # PARTIAL_WINDOW_S class attribute for why this is safe and
+        # necessary. round()-based frame count, floor of 1 frame so a
+        # misconfigured (e.g. 0) window doesn't feed Whisper an empty array.
+        window_frame_count = max(1, round(self.PARTIAL_WINDOW_S / FRAME_DURATION_S))
+        windowed_frames = self.segment_frames[-window_frame_count:]
+        audio_np = np.concatenate(windowed_frames)
         result = await asyncio.to_thread(get_engine().transcribe, audio_np)
         if result["text"]:
             await self.send(text_data=json.dumps({"type": "partial", "text": result["text"]}))
