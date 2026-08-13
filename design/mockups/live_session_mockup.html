@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Live Session — mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #10121B;
+    --panel: #1B1E2E;
+    --panel-raised: #262B40;
+    --hairline: #333850;
+    --amber: #E7A83D;
+    --amber-dim: #4A3A1E;
+    --blue: #6FA3D8;
+    --blue-dim: #23344A;
+    --paper: #EDE9E2;
+    --mist: #8A8FA6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #E7E4DC;
+    font-family: 'IBM Plex Sans', sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 48px 16px;
+  }
+  .frame {
+    width: 390px;
+    height: 820px;
+    background: #05060A;
+    border-radius: 46px;
+    padding: 14px;
+    box-shadow: 0 30px 60px rgba(0,0,0,0.25);
+  }
+  .screen {
+    width: 100%;
+    height: 100%;
+    background: var(--ink);
+    border-radius: 34px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    color: var(--paper);
+  }
+  .notch {
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .notch::before {
+    content: "";
+    width: 90px;
+    height: 6px;
+    background: #000;
+    border-radius: 4px;
+  }
+  .telemetry {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px 14px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .telemetry-left { display: flex; align-items: center; gap: 10px; }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--amber);
+    box-shadow: 0 0 0 3px var(--amber-dim);
+    animation: pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .session-clock {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 15px;
+    letter-spacing: 0.5px;
+  }
+  .level-toggle {
+    display: flex;
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 2px;
+    gap: 2px;
+  }
+  .level-toggle span {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    padding: 5px 9px;
+    border-radius: 6px;
+    color: var(--mist);
+  }
+  .level-toggle span.active {
+    background: var(--panel-raised);
+    color: var(--amber);
+  }
+  .transcript {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .turn-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--mist);
+    margin-bottom: 4px;
+  }
+  .turn-text {
+    font-size: 14.5px;
+    line-height: 1.55;
+    color: var(--paper);
+  }
+  .suggestion {
+    background: var(--panel);
+    border-left: 3px solid var(--blue);
+    border-radius: 0 10px 10px 0;
+    padding: 12px 14px;
+    margin-top: 4px;
+  }
+  .suggestion-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 500;
+    font-size: 12px;
+    color: var(--blue);
+    margin-bottom: 6px;
+  }
+  .suggestion-label svg { width: 13px; height: 13px; }
+  .suggestion-text {
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--paper);
+  }
+  .suggestion-meta {
+    display: flex;
+    gap: 12px;
+    margin-top: 8px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--mist);
+  }
+  .controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+    padding: 22px 0 30px;
+    border-top: 1px solid var(--hairline);
+  }
+  .side-btn {
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    background: var(--panel);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .side-btn svg { width: 18px; height: 18px; stroke: var(--mist); }
+  .mic-wrap {
+    position: relative;
+    width: 84px;
+    height: 84px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .mic-btn {
+    width: 60px; height: 60px;
+    border-radius: 50%;
+    background: var(--panel-raised);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2;
+  }
+  .mic-btn svg { width: 24px; height: 24px; stroke: var(--amber); }
+  .ring-tick {
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 3px; height: 9px;
+    background: var(--amber-dim);
+    border-radius: 2px;
+    transform-origin: 1.5px 42px;
+  }
+  .ring-tick.lit { background: var(--amber); }
+  .clock-label {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 500;
+    font-size: 11px;
+    color: var(--mist);
+    text-align: center;
+    margin-top: 6px;
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="screen">
+    <div class="notch"></div>
+    <div class="telemetry">
+      <div class="telemetry-left">
+        <span class="dot"></span>
+        <span class="session-clock">12:04</span>
+      </div>
+      <div class="level-toggle">
+        <span>quick</span>
+        <span class="active">medium</span>
+        <span>detailed</span>
+      </div>
+    </div>
+
+    <div class="transcript">
+      <div>
+        <div class="turn-label">Interviewer</div>
+        <div class="turn-text">If queries for products slow down as your data grows, what would you do?</div>
+        <div class="suggestion">
+          <div class="suggestion-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4M12 2a6 6 0 0 0-4 10.5c.6.6 1 1.4 1 2.5h6c0-1.1.4-1.9 1-2.5A6 6 0 0 0 12 2Z"/></svg>
+            Suggested answer
+          </div>
+          <div class="suggestion-text">Add indexes on frequently filtered/sorted columns, introduce caching for repeat reads, and consider denormalizing hot query paths as scale demands it.</div>
+          <div class="suggestion-meta">
+            <span>medium</span>
+            <span>310ms</span>
+            <span>conf 78%</span>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="turn-label">You</div>
+        <div class="turn-text">I'd start with indexing frequently queried columns, then look at caching and denormalization as it grows.</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="side-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6h4v12H6zM14 6h4v12h-4z"/></svg>
+      </div>
+      <div class="mic-wrap" id="micWrap">
+        <div class="mic-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg>
+        </div>
+      </div>
+      <div class="side-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const wrap = document.getElementById('micWrap');
+  const tickCount = 16;
+  for (let i = 0; i < tickCount; i++) {
+    const tick = document.createElement('div');
+    tick.className = 'ring-tick';
+    const angle = (360 / tickCount) * i;
+    tick.style.transform = `translate(-50%, -50%) rotate(${angle}deg)`;
+    if (i % 3 === 0 && i < 10) tick.classList.add('lit');
+    wrap.appendChild(tick);
+  }
+</script>
+</body>
+</html>

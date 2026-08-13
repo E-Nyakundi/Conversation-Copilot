@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Onboarding flow — mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #10121B;
+    --panel: #1B1E2E;
+    --panel-raised: #262B40;
+    --hairline: #333850;
+    --amber: #E7A83D;
+    --amber-dim: #4A3A1E;
+    --blue: #6FA3D8;
+    --blue-dim: #23344A;
+    --paper: #EDE9E2;
+    --mist: #8A8FA6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #E7E4DC;
+    font-family: 'IBM Plex Sans', sans-serif;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 32px;
+    padding: 48px 16px;
+  }
+  .frame-wrap { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .frame-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #6b6f80;
+  }
+  .frame {
+    width: 390px;
+    height: 820px;
+    background: #05060A;
+    border-radius: 46px;
+    padding: 14px;
+    box-shadow: 0 30px 60px rgba(0,0,0,0.25);
+  }
+  .screen {
+    width: 100%;
+    height: 100%;
+    background: var(--ink);
+    border-radius: 34px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    color: var(--paper);
+    position: relative;
+  }
+  .notch {
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .notch::before {
+    content: "";
+    width: 90px;
+    height: 6px;
+    background: #000;
+    border-radius: 4px;
+  }
+
+  /* progress dots, shared */
+  .progress {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 0 4px;
+  }
+  .progress span {
+    width: 20px; height: 3px;
+    border-radius: 2px;
+    background: var(--panel-raised);
+  }
+  .progress span.active { background: var(--amber); }
+
+  .step-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 28px;
+    text-align: center;
+  }
+
+  .step-eyebrow {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10.5px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--mist);
+    margin-bottom: 14px;
+  }
+  .step-title {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    font-size: 23px;
+    line-height: 1.3;
+    margin-bottom: 12px;
+  }
+  .step-title .accent { color: var(--amber); }
+  .step-desc {
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--mist);
+    max-width: 280px;
+  }
+
+  /* Step 1 — welcome: amplitude ring motif, static */
+  .ring-hero {
+    width: 168px; height: 168px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 28px;
+    position: relative;
+  }
+  .ring-hero svg { width: 168px; height: 168px; position: absolute; top: 0; left: 0; }
+  .ring-hero .core {
+    width: 78px; height: 78px;
+    border-radius: 50%;
+    background: var(--panel);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+  }
+  .ring-hero .core svg { position: static; width: 30px; height: 30px; stroke: var(--amber); }
+
+  /* Step 2 — mic permission: pre-prompt "why" card before OS dialog */
+  .permission-card {
+    width: 100%;
+    background: var(--panel);
+    border-radius: 14px;
+    padding: 18px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    text-align: left;
+    margin-top: 22px;
+  }
+  .permission-icon {
+    width: 38px; height: 38px;
+    border-radius: 10px;
+    background: var(--amber-dim);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .permission-icon svg { width: 18px; height: 18px; stroke: var(--amber); }
+  .permission-card-title { font-size: 13px; font-weight: 500; color: var(--paper); margin-bottom: 3px; }
+  .permission-card-sub { font-size: 12px; color: var(--mist); line-height: 1.5; }
+
+  .mic-glyph {
+    width: 96px; height: 96px;
+    border-radius: 50%;
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 24px;
+  }
+  .mic-glyph svg { width: 36px; height: 36px; stroke: var(--amber); }
+
+  /* Step 3 — first session: mirrors Home's start button language */
+  .start-btn-preview {
+    width: 120px; height: 120px;
+    border-radius: 50%;
+    background: var(--panel);
+    border: 2px solid var(--amber);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 26px;
+  }
+  .start-btn-preview svg { width: 40px; height: 40px; stroke: var(--amber); }
+
+  .tip-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    text-align: left;
+    width: 100%;
+    margin-top: 18px;
+    padding: 12px 14px;
+    background: var(--panel);
+    border-radius: 10px;
+  }
+  .tip-row svg { width: 15px; height: 15px; stroke: var(--blue); flex-shrink: 0; margin-top: 1px; }
+  .tip-row span { font-size: 12px; color: var(--mist); line-height: 1.5; }
+
+  .footer {
+    padding: 16px 24px 24px;
+  }
+  .primary-btn {
+    width: 100%;
+    padding: 15px;
+    border-radius: 12px;
+    background: var(--amber);
+    color: var(--ink);
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    font-size: 14.5px;
+    text-align: center;
+  }
+  .secondary-btn {
+    width: 100%;
+    padding: 13px;
+    text-align: center;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px;
+    color: var(--mist);
+    margin-top: 10px;
+  }
+  .skip-link {
+    position: absolute;
+    top: 14px; right: 20px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--mist);
+    z-index: 2;
+  }
+</style>
+</head>
+<body>
+
+<div class="frame-wrap">
+  <div class="frame-label">Step 1 — Welcome</div>
+  <div class="frame">
+    <div class="screen">
+      <div class="skip-link">Skip</div>
+      <div class="notch"></div>
+      <div class="progress">
+        <span class="active"></span><span></span><span></span>
+      </div>
+      <div class="step-body">
+        <div class="ring-hero">
+          <svg viewBox="0 0 168 168" fill="none">
+            <circle cx="84" cy="84" r="78" stroke="#262B40" stroke-width="2"/>
+            <g stroke="#E7A83D" stroke-width="3" stroke-linecap="round">
+              <line x1="84" y1="6" x2="84" y2="18"/>
+              <line x1="84" y1="150" x2="84" y2="162"/>
+              <line x1="6" y1="84" x2="18" y2="84"/>
+              <line x1="150" y1="84" x2="162" y2="84"/>
+              <line x1="27" y1="27" x2="35" y2="35"/>
+              <line x1="133" y1="133" x2="141" y2="141"/>
+              <line x1="27" y1="141" x2="35" y2="133"/>
+              <line x1="133" y1="35" x2="141" y2="27"/>
+            </g>
+            <g stroke="#4A3A1E" stroke-width="3" stroke-linecap="round">
+              <line x1="61" y1="10" x2="65" y2="21"/>
+              <line x1="107" y1="10" x2="103" y2="21"/>
+              <line x1="61" y1="158" x2="65" y2="147"/>
+              <line x1="107" y1="158" x2="103" y2="147"/>
+            </g>
+          </svg>
+          <div class="core">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a4 4 0 0 0 4-4V6a4 4 0 0 0-8 0v5a4 4 0 0 0 4 4Z"/><path d="M19 11a7 7 0 0 1-14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg>
+          </div>
+        </div>
+        <div class="step-eyebrow">Conversation Copilot</div>
+        <div class="step-title">A quiet <span class="accent">second brain</span><br>for live conversations</div>
+        <div class="step-desc">
+          Interviews, sales calls, technical discussions — Copilot listens, transcribes,
+          and surfaces a suggestion right when you need one. Built to be glanced at
+          for a second, then get out of your way.
+        </div>
+      </div>
+      <div class="footer">
+        <div class="primary-btn">Continue</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="frame-wrap">
+  <div class="frame-label">Step 2 — Mic permission (pre-prompt)</div>
+  <div class="frame">
+    <div class="screen">
+      <div class="skip-link">Skip</div>
+      <div class="notch"></div>
+      <div class="progress">
+        <span></span><span class="active"></span><span></span>
+      </div>
+      <div class="step-body">
+        <div class="mic-glyph">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a4 4 0 0 0 4-4V6a4 4 0 0 0-8 0v5a4 4 0 0 0 4 4Z"/><path d="M19 11a7 7 0 0 1-14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg>
+        </div>
+        <div class="step-eyebrow">Before we ask Android</div>
+        <div class="step-title">Copilot needs your <span class="accent">microphone</span></div>
+        <div class="step-desc">
+          This is the only permission the app needs. Audio is processed to power
+          live transcription and suggestions — nothing is recorded without you
+          starting a session.
+        </div>
+        <div class="permission-card">
+          <div class="permission-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>
+          </div>
+          <div>
+            <div class="permission-card-title">Only active during a session</div>
+            <div class="permission-card-sub">The mic is off the moment you're not in a live session — no background listening.</div>
+          </div>
+        </div>
+      </div>
+      <div class="footer">
+        <div class="primary-btn">Allow microphone access</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="frame-wrap">
+  <div class="frame-label">Step 3 — Ready</div>
+  <div class="frame">
+    <div class="screen">
+      <div class="notch"></div>
+      <div class="progress">
+        <span></span><span></span><span class="active"></span>
+      </div>
+      <div class="step-body">
+        <div class="start-btn-preview">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a4 4 0 0 0 4-4V6a4 4 0 0 0-8 0v5a4 4 0 0 0 4 4Z"/><path d="M19 11a7 7 0 0 1-14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg>
+        </div>
+        <div class="step-eyebrow">You're set up</div>
+        <div class="step-title">Ready for your <span class="accent">first session</span></div>
+        <div class="step-desc">
+          Tap the ringed button on Home any time to start listening. Suggestions
+          appear as blue cards next to the live transcript.
+        </div>
+        <div class="tip-row">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          <span>Try a low-stakes call first — a quick sync or a friend — to get a feel for the timing before something high-stakes.</span>
+        </div>
+      </div>
+      <div class="footer">
+        <div class="primary-btn">Go to Home</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

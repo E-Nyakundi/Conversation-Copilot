@@ -212,7 +212,7 @@ Goal: prove the network path and measure real latency before anything else depen
 
 - [x] Django ASGI project scaffolded with Channels installed
 - [ ] ~~Cloudflare Tunnel configured~~ — **superseded (v3, revised):** existing shared VM instead, reachable via BizYangu's existing Caddy reverse proxy (not a new Nginx instance — see §6a), confirmed reachable from outside your home network
-- [x] Flutter app scaffolded, connects to the VM's `wss://` URL directly (no tunnel) — `flutter_app/` created, Android-first (iOS deferred), monorepo. `lib/main.dart` implements a minimal WebSocket ping-test screen mirroring `latency_test.html`'s protocol against `PingConsumer`. Real toolchain setup pain along the way (Windows PATH GUI's broken 2047-char limit, PATH duplicates from years of installs, Gradle download lock from a stuck process, corrupted NDK download, and a genuine disk-space-full error underneath both of those) — all resolved. First `flutter run` to a physical device (Nokia G21, via USB debugging/adb) took ~44 minutes (one-time Gradle + NDK + SDK Platform 36 + Build-Tools 36 + CMake download/install); subsequent builds should be dramatically faster since everything's now cached.
+- [x] Flutter app scaffolded, connects to the VM's `wss://` URL directly (no tunnel) — `flutter_app/` created, Android-first (iOS deferred), monorepo. `lib/main.dart` implements a minimal WebSocket ping-test screen mirroring `latency_test.html`'s protocol against `PingConsumer`. Real toolchain setup pain along the way (Windows PATH GUI's broken 2047-char limit, PATH duplicates from years of installs, Gradle download lock from a stuck process, corrupted NDK download, and a genuine disk-space-full error underneath both of those) — all resolved. First `flutter run` to a physical device (Nokia G21, via USB debugging/adb) took ~44 minutes (one-time Gradle + NDK + SDK Platform 36 + Build-Tools 36 + CMake download/install); subsequent builds should be dramatically faster since everything's now cached. **Follow-up fix:** a later Android build failed at compile time — `record: ^5.1.2` resolved to a broken combination (`record_platform_interface` newer than the pinned `record_linux` implements), which fails the whole kernel snapshot compile regardless of target platform since Dart checks all platform implementations at compile time. Fixed by bumping to `record: ^7.1.1` (the mic-capture API used in `capture_io.dart` — `AudioRecorder`, `hasPermission()`, `startStream(RecordConfig(...))` — is unchanged across that range, so it was a safe version bump, not a rewrite).
 - [x] Minimal round-trip test: phone sends a text ping over WebSocket → server echoes it back → measure latency across at least 3 network conditions (phone on cellular, phone on wifi, from a different city/region if possible) — **re-run against the VM, done for WiFi (browser + native Flutter app) and a second non-cellular network; cellular still outstanding** (see decision gate below)
 - [x] Audio streaming proof of concept: phone mic → chunked PCM/Opus → WebSocket → server writes to a file, confirm no corruption/drift — **satisfied by inference, not built literally as written.** Development went straight to the full Phase 1 pipeline (VAD → STT → live transcript in `audio_test.html`) instead of a discrete raw-file-dump step. Coherent live transcription against real speech is a stronger proof than a raw file would've been — corrupted/dropped/drifted audio would show up as garbage STT output, so working transcripts already rule that out. Revisit only if a real corruption/drift issue is ever suspected downstream (e.g. STT quality degrading in a way that looks audio-related rather than model-related).
 - [ ] **Decision gate:** round-trip latency measured against the live VM (`wss://145-241-102-99.sslip.io/ws/ping/`), via `PingConsumer`/`latency_test.html`:
@@ -365,9 +365,33 @@ around it to polish.
   **Session Detail/Replay** (a single past session's transcript +
   suggestions, feeds Phase 8's debrief later), **Settings** (answer
   level default, diarization toggle, provider keys if self-hosted,
-  domain/mode selection once Phase 9 exists).
-- [ ] Visual identity: color palette, typography, iconography — nothing
-  chosen yet beyond Flutter/Material defaults in the test harness.
+  domain/mode selection once Phase 9 exists). All six screens — Live
+  Session, Home/Dashboard, Session History, Session Detail/Replay,
+  Settings, and the onboarding flow — are now defined via approved
+  mockups (see below). Settings intentionally keeps STT
+  provider/API key/server address secondary in the visual hierarchy —
+  open question whether that section ships in the consumer build at
+  all or stays a self-hosted/debug-only screen. Onboarding is a 3-step
+  flow: welcome (amplitude-ring hero, states the product's purpose),
+  mic permission pre-prompt (explains *why* before the OS dialog fires,
+  notes the mic is only active during a session), and a "ready" step
+  that mirrors Home's start-button visual language and closes with a
+  low-stakes-first-call tip.
+- [x] **Visual identity — decided.** Concept: the app is glanced at
+  during a live, high-stakes conversation, often for a second or two —
+  legibility at a glance matters more than decoration, so the direction
+  leans "instrument panel," not generic AI-chatbot dark mode.
+  **Color:** `ink #10121B` (deep indigo bg, not pure black) ·
+  `panel #1B1E2E` · `panel-raised #262B40` · `signal-amber #E7A83D`
+  (listening/live state) · `signal-blue #6FA3D8` (suggestion/insight
+  state) · `paper #EDE9E2` text · `mist #8A8FA6` muted text. The two
+  accents are load-bearing, not decorative — amber means "the system
+  is listening," blue means "here's a suggestion." **Type:** Space
+  Grotesk (titles/timers) · IBM Plex Sans (transcript body) · IBM Plex
+  Mono (timestamps, confidence %, latency — the instrument-readout
+  register). **Signature element:** a segmented amplitude ring around
+  the mic button that lights up amber with live voice level — makes
+  the VAD's own signal visible instead of just a status word.
 - [ ] Onboarding flow: first-run experience, mic permission request
   (Android's permission prompts need a clear "why" screen before the
   OS dialog, not a cold ask), how a new user starts their first session.
@@ -375,13 +399,33 @@ around it to polish.
   the test harness only has a "Not connected." status line; a shipped
   app needs real states for e.g. no sessions yet, connection lost
   mid-session, mic permission denied.
-- [ ] Decide whether `live_session_screen.dart`'s existing layout
+- [x] Decide whether `live_session_screen.dart`'s existing layout
   (two-box full-transcript + extracted/suggestions split) carries
   forward into the designed app largely as-is, or gets rethought once
   it's sitting inside real navigation instead of standing alone.
-- [ ] Once screens are defined: wireframes (low-fidelity, layout only)
+  **Decided: rethought, not carried forward as-is.** The transcript +
+  suggestions split survives structurally, but the answer-level toggle
+  moved into a top telemetry strip (rarely touched, doesn't need prime
+  real estate), suggestion cards got a blue left-accent treatment to
+  read as distinct from transcript at a glance, and the mic control
+  became the amplitude-ring centerpiece described above.
+- [x] Once screens are defined: wireframes (low-fidelity, layout only)
   → high-fidelity mockups (Figma or similar) → hand off to Flutter
-  implementation, screen by screen.
+  implementation, screen by screen. **All six screens mocked and
+  approved** — **Live Session** (`live_session_mockup.html`),
+  **Home/Dashboard** (`home_dashboard_mockup.html`), **Session
+  History** (`session_history_mockup.html`), **Session Detail/Replay**
+  (`session_detail_mockup.html`, tabs for Transcript/Suggestions/
+  Summary — Summary tab is a placeholder reserved for Phase 8's
+  debrief content, not yet built), **Settings**
+  (`settings_mockup.html`, Advanced/self-hosted section kept visually
+  secondary, Domain mode row tagged "soon" for Phase 9), and
+  **Onboarding** (`onboarding_mockup.html`, 3-step: welcome → mic
+  permission pre-prompt → ready/first-session tip). None of the six
+  approved mockups have been wired into actual Flutter widgets yet —
+  they're static HTML references for visual direction, not
+  implementation. **Next up:** implementation phase — turning these
+  six mockups into real Flutter screens/navigation.
 
 ### Phase 4 — Teleprompter UI
 
