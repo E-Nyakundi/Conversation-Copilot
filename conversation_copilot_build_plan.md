@@ -346,6 +346,43 @@ Two remaining quality gaps, distinct from each other and from Update 5's RAM cei
 - [x] Flutter no longer shows "Live Session (**Phase 1**)" in the UI — retitled to "Live Session" in `live_session_screen.dart`.
 - [x] **Cloud STT (final segments only):** `stt/cloud_router.py` added, mirroring `ai/cloud_router.py`'s exact shape — Groq Whisper (`whisper-large-v3-turbo`, same `GROQ_API_KEY` already configured for the LLM router) as primary, local `faster-whisper` engine (`stt/engine.py`) as fallback on missing key or any Groq-specific failure (auth/connection/timeout/rate-limit/empty response). New `STT_PROVIDER` (default `groq`) and `GROQ_WHISPER_MODEL` env vars in both `.env.example`/`.env.production.example`. **Deliberately scoped to `_finalize_segment` only, not `_emit_partial`** — partials fire every `PARTIAL_INTERVAL_S` mid-sentence, so routing those to a network call would burn Groq's rate limit fast and add round-trip latency to the thing that most needs to feel instant; local Whisper stays wired directly into the partial path unchanged. This was motivated by the VM's RAM ceiling (5.8GB total) being the likely bottleneck on final-turn transcription speed/accuracy now that the LLM side is already offloaded to Groq. Provider selection left abstracted (`STT_PROVIDER` branch in `get_final_transcription`) so Deepgram or AssemblyAI — real streaming STT, unlike Groq's chunk-based endpoint — can be added later as another branch without touching `audio/consumers.py`; not implemented yet, Groq was the chosen first step since it reuses the existing account/key with no new integration. `manage.py check` and `makemigrations --check --dry-run` both pass; **not yet tested against a live Groq call or on the VM** — next step is smoke-testing with a real `GROQ_API_KEY` and comparing final-turn latency/accuracy against local-only.
 
+### Phase 3.5 — App Design (UI/UX) *(new — the app itself has not been designed yet)*
+
+Goal: the product so far is a working pipeline behind two dev/test
+screens, not a designed app. `latency_test.html`/the ping test and
+`audio_test.html`/`live_session_screen.dart` (the "Live Session" test
+harness) exist to prove the backend works — they were never meant to be
+the shipped UI, and no actual screen design, navigation, or visual
+identity has been done. This phase has to happen before Phase 4's
+teleprompter polish means anything, since right now there's no app
+around it to polish.
+
+- [ ] Define the actual screen list and navigation flow — at minimum:
+  **Home/dashboard** (start a new session, see recent sessions),
+  **Live Session** (the real version of today's test harness — this is
+  the one screen that already has a working prototype to build from),
+  **Session History** (past sessions, searchable/filterable),
+  **Session Detail/Replay** (a single past session's transcript +
+  suggestions, feeds Phase 8's debrief later), **Settings** (answer
+  level default, diarization toggle, provider keys if self-hosted,
+  domain/mode selection once Phase 9 exists).
+- [ ] Visual identity: color palette, typography, iconography — nothing
+  chosen yet beyond Flutter/Material defaults in the test harness.
+- [ ] Onboarding flow: first-run experience, mic permission request
+  (Android's permission prompts need a clear "why" screen before the
+  OS dialog, not a cold ask), how a new user starts their first session.
+- [ ] Empty states, error states, loading states for each screen above —
+  the test harness only has a "Not connected." status line; a shipped
+  app needs real states for e.g. no sessions yet, connection lost
+  mid-session, mic permission denied.
+- [ ] Decide whether `live_session_screen.dart`'s existing layout
+  (two-box full-transcript + extracted/suggestions split) carries
+  forward into the designed app largely as-is, or gets rethought once
+  it's sitting inside real navigation instead of standing alone.
+- [ ] Once screens are defined: wireframes (low-fidelity, layout only)
+  → high-fidelity mockups (Figma or similar) → hand off to Flutter
+  implementation, screen by screen.
+
 ### Phase 4 — Teleprompter UI
 
 - [x] **Quick / Medium / Detailed answer level switching** — `ai/prompts.py` gained `ANSWER_LEVELS` (per-level instruction + token budget, env-overridable via `LLM_MAX_TOKENS_QUICK/MEDIUM/DETAILED`), threaded through `ai/local_llm.py` and `ai/cloud_router.py`. `Suggestion.answer_level` persists which level produced each row (migration `0004_suggestion_answer_level.py`). `AudioStreamConsumer` tracks the level per-connection, accepts `{"type": "set_answer_level", "level": ...}` from the client (silently normalized to `medium` on anything unrecognized — see `ai.prompts.normalize_level`), and snapshots the level at generation-start so a mid-flight switch can't relabel an in-progress suggestion. Flutter: `live_session_screen.dart` has a `SegmentedButton` (Quick/Medium/Detailed) that sends `set_answer_level` and reflects the server's ack.
@@ -360,6 +397,18 @@ Two remaining quality gaps, distinct from each other and from Update 5's RAM cei
 
 - [ ] Persist people, topics, numbers, dates, promises, Q&A pairs per session
 - [ ] Cross-session memory (recall from past conversations, if desired)
+- [ ] **Open decision — user domain/expertise profile:** should the app
+  know what field the user is in (e.g. software engineering vs. sales
+  vs. teaching) and use that to shape suggestions — vocabulary,
+  assumed background knowledge, the kind of answer a domain expert
+  would actually give, not a generic one? Not yet decided whether this
+  is a real requirement or nice-to-have. If pursued, the natural home
+  is a simple stored user profile (field/role, maybe a short
+  free-text description) fed into `ai/prompts.py`'s suggestion prompt
+  as fixed context — a lighter version of what Phase 9's domain modes
+  do with prompt templates, but per-user rather than per-session-mode.
+  Revisit once Phase 9 exists, since the two overlap: Phase 9 picks a
+  mode per session, this would set a default based on who the user is.
 
 ### Phase 6 — Personal Knowledge Base (RAG)
 
@@ -383,6 +432,29 @@ Two remaining quality gaps, distinct from each other and from Update 5's RAM cei
 ### Phase 9 — Domain Modes
 
 - [ ] Mode-specific prompt templates, vocabulary, and debrief metrics: Interview Practice, Sales, Engineering, Customer Support, Public Speaking, Teaching, Negotiation, Language Practice, General
+
+### Phase 10 — Distribution & Licensing *(new — deferred, not needed for the current build/test cycle)*
+
+Goal: sell the app as a **one-time purchase**, not a subscription — no
+account system for v1.
+
+- [ ] **Decided:** no login/account/subscription system for v1. The app
+  is sold as a one-time fee, so there's no per-user server-side
+  identity to build or maintain right now — this removes an entire
+  category of work (auth, password reset, user table beyond what
+  `Session`/`Turn` already need) from the near-term plan.
+- [ ] **Open decision — how a purchase is verified without an account
+  system:** most likely path is store-based licensing (Google
+  Play/App Store purchase receipt validation on launch) rather than a
+  custom license-key server, since that avoids standing up any new
+  backend just for entitlement checks. Needs a decision once the app
+  is closer to shippable — not urgent now.
+- [ ] **Revisit if this ever changes:** cross-session Conversation
+  Memory (Phase 5) and any future "sync across devices" want *some*
+  durable identity even without a subscription model — a purchase
+  receipt or device-bound key could stand in for a full account, but
+  that's a design choice for when Phase 5 is actually being built, not
+  before.
 
 ### Phase 0.5 — CI/CD & VM Deployment *(new in v3 — build right after Phase 0's local proof-of-concept works)*
 
