@@ -426,6 +426,44 @@ around it to polish.
   they're static HTML references for visual direction, not
   implementation. **Next up:** implementation phase — turning these
   six mockups into real Flutter screens/navigation.
+- [x] **Implementation — all six mockups wired into real Flutter
+  screens/navigation.** `theme.dart` holds the shared design tokens
+  (colors, `CopilotHeader`, `CopilotGroup`, `SectionLabel`) so every
+  screen pulls from one source instead of re-declaring the palette.
+  `main.dart`'s `AppShell` is a bottom-nav shell across
+  **Home / History / Settings** (`NavigationBar`); this is a deliberate
+  deviation from the mockup's gear-icon-only Settings access — three
+  root destinations map more naturally onto Flutter's tab idiom, and
+  Home's gear icon still jumps straight to the Settings tab, so the
+  one-tap access the mockup intended is preserved. Onboarding
+  (`onboarding_screen.dart`) gates the app shell on first run; there's
+  no persistence layer yet, so "seen onboarding" is in-memory only and
+  resets on cold start — a `shared_preferences`-backed flag is
+  follow-up work once that dependency is added. `home_screen.dart`,
+  `session_history_screen.dart` (search + filter chips + month
+  grouping), `session_detail_screen.dart` (stats row, Transcript/
+  Suggestions/Summary tabs — Summary tab is still the Phase 8 debrief
+  placeholder), and `settings_screen.dart` (session defaults,
+  in-memory only; Advanced section read-only for now, plus a
+  "Connectivity test" row that reaches the old Phase 0 ping harness)
+  are all new. `models/session_summary.dart` holds the shared
+  mock-session data these three screens render — still no backend
+  endpoint for past sessions, so this is placeholder data as noted
+  when the model was first sketched. `live_session_screen.dart` was
+  restyled in place to the telemetry-strip/tabs/amplitude-ring layout
+  from `live_session_mockup.html`; all WS/mic logic (connect, message
+  handling, answer-level switching, full-transcript/extracted-entries
+  split) is unchanged from the working Phase 4 version, only `build()`
+  changed. The amplitude ring reacts to a steady pulse while recording,
+  not real per-sample audio level — `MicCapture` doesn't expose an
+  amplitude stream yet, noted in the ring's own docstring as a
+  follow-up if a true VAD level meter is wanted later.
+- **Not yet done — same verification gap as Phase 4 below:** this
+  implementation pass was checked with the same brace/paren-balance
+  script used previously (all files pass), not a real `flutter
+  analyze` or build, for the same sandbox-has-no-Flutter-toolchain
+  reason. Treat this as reviewed-by-hand, not compiler-verified, until
+  `flutter analyze` / `flutter run -d chrome` actually run against it.
 
 ### Phase 4 — Teleprompter UI
 
