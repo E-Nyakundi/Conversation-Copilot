@@ -7,10 +7,20 @@ python-dotenv>=1.0,<2.0
 numpy>=1.26,<2.0
 
 # Phase 1 — VAD + STT (required for AudioStreamConsumer)
-# CPU-only torch is fine to start; swap the index/wheel for a CUDA build
-# if your server has a GPU worth using.
-torch>=2.2,<3.0
-torchaudio>=2.2,<3.0
+#
+# CPU-only torch, pinned explicitly (2026-08-14, after a prod deploy
+# filled the VM's disk: the plain PyPI `torch` wheel bundles the full
+# CUDA runtime — nvidia-cublas/cudnn/nccl/etc, several GB of libraries
+# like libcublasLt.so — even though this VM has no Nvidia GPU (2 vCPU
+# AMD EPYC, see build plan §6a). `--extra-index-url .../whl/cpu` below
+# points pip at PyTorch's dedicated CPU-only wheel index instead, so
+# `pip install torch` resolves to the `+cpu` build with none of the
+# Nvidia packages pulled in at all. If a real Nvidia GPU is ever added,
+# remove this index line and the `+cpu` suffixes to get the CUDA build
+# back.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.4.1+cpu
+torchaudio==2.4.1+cpu
 faster-whisper>=1.0,<2.0
 
 # silero-vad ships its ONNX model file inside the package itself, so

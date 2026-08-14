@@ -581,6 +581,8 @@ account system for v1.
   that's a design choice for when Phase 5 is actually being built, not
   before.
 
+- [x] **Prod deploy filled the VM's disk (2026-08-14) — fixed.** `make prod-deploy`'s Docker build failed at the image-export step: `write .../nvidia/cu13/lib/libcublasLt.so.13: no space left on device`. Root cause: the plain PyPI `torch` wheel bundles the full CUDA runtime (cublas/cudnn/nccl/etc — several GB) by default, even though this VM has no Nvidia GPU (2 vCPU AMD EPYC, no CUDA-capable card — see §6a). `requirements.txt` now points pip at PyTorch's dedicated CPU-only wheel index (`--extra-index-url https://download.pytorch.org/whl/cpu`) and pins `torch==2.4.1+cpu` / `torchaudio==2.4.1+cpu` explicitly, so the Nvidia packages are never downloaded at all. **Before retrying the deploy, also reclaim the disk space already consumed by the failed build**: `docker builder prune -af && docker image prune -af` on the VM, then re-run `make prod-deploy`. Not yet re-verified against a live rebuild on the VM — that's the next step on your end. If a real Nvidia GPU is ever attached to this VM, remove the CPU index line and the `+cpu` suffixes to get GPU-accelerated torch back.
+
 ### Phase 0.5 — CI/CD & VM Deployment *(new in v3 — build right after Phase 0's local proof-of-concept works)*
 
 Goal: get `git push` → live on the VM working before more app logic piles up on top of a manual deploy process.
