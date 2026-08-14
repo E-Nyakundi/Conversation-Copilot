@@ -122,6 +122,10 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         self.silence_tail_s = 0.0
         self.gap_since_last_turn_s = 0.0
         self.speaker_labeler = speaker_module.NaivePauseSpeakerLabeler()
+        # Phase 1 revisit (2026-08-14): session-persistent speaker
+        # identity — see audio/speaker.py's module docstring. One
+        # registry per connection, same scope as speaker_labeler above.
+        self.speaker_registry = speaker_module.SessionSpeakerRegistry()
         self.last_turn_text = None  # Phase 2: topic_change needs the previous turn's text
         # Phase 4: answer-level switching. Session-wide, not per-question —
         # a client-sent "set_answer_level" message (see receive()) changes
@@ -285,17 +289,45 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             self.gap_since_last_turn_s = 0.0
             return
 
-        if speaker_module.diarization_enabled():
+        # Phase 1 revisit (2026-08-14): mode-dispatched speaker labeling.
+        # See audio/speaker.py's module docstring for what each mode is.
+        # Any ML-based mode falls back to the naive pause labeler for
+        # *this turn* on failure/timeout rather than dropping the speaker
+        # label entirely, per the build plan's explicit instruction.
+        mode = speaker_module.diarization_mode()
+        speaker_label = None
+        diarize_started = time.time()
+
+        if mode == "embedding":
+            try:
+                embedding = await asyncio.to_thread(
+                    speaker_module.get_embedder().embed, audio_np, SAMPLE_RATE
+                )
+                if embedding is not None:
+                    speaker_label = self.speaker_registry.assign(embedding)
+                print(
+                    f"[diarize] mode=embedding {(time.time() - diarize_started) * 1000:.0f}ms "
+                    f"label={speaker_label!r}",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(f"[diarize] mode=embedding failed, falling back to naive: {exc!r}", flush=True)
+                speaker_label = None
+        elif mode == "pyannote_full":
             try:
                 speaker_label = await asyncio.to_thread(
                     speaker_module.get_diarizer().label_segment, audio_np, SAMPLE_RATE
                 )
-            except Exception:
-                # Diarization is opt-in and can fail for all sorts of
-                # environment reasons (missing HF auth, model download,
-                # etc.) — fall back rather than dropping the transcript.
-                speaker_label = self.speaker_labeler.label(segment_gap_s)
-        else:
+                print(
+                    f"[diarize] mode=pyannote_full {(time.time() - diarize_started) * 1000:.0f}ms "
+                    f"label={speaker_label!r}",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(f"[diarize] mode=pyannote_full failed, falling back to naive: {exc!r}", flush=True)
+                speaker_label = None
+
+        if not speaker_label:
             speaker_label = self.speaker_labeler.label(segment_gap_s)
 
         ended_wall = timezone.now()

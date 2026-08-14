@@ -34,11 +34,16 @@ groq>=0.11,<1.0
 # and this isn't installed:
 # llama-cpp-python>=0.3,<0.4
 
-# Phase 1 — optional real speaker diarization (off by default; the naive
-# pause-based labeler in audio/speaker.py works with zero extra deps).
-# Uncomment to enable, then set ENABLE_DIARIZATION=1 and HF_TOKEN in .env
-# (HF_TOKEN needs access to pyannote/speaker-diarization-3.1 — accept its
-# terms on huggingface.co first):
+# Phase 1 revisit (2026-08-14) — speaker diarization, off by default on
+# a fresh install (the naive pause-based labeler in audio/speaker.py
+# still works with zero extra deps). Needed for BOTH ML-based modes
+# ("embedding" — the new session-persistent default once this is
+# installed and SPEAKER_DIARIZATION_MODE/HF_TOKEN are set — and the
+# older "pyannote_full" fallback mode). Uncomment to enable, then set
+# HF_TOKEN in .env (needs access to pyannote/embedding AND
+# pyannote/speaker-diarization-3.1 — accept both models' terms on
+# huggingface.co first, "embedding" mode only downloads the smaller
+# pyannote/embedding model at runtime, not the full pipeline's weights):
 # pyannote.audio>=3.1,<4.0
 
 # Added in later phases — uncomment as you build them:

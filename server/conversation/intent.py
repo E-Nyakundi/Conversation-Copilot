@@ -69,6 +69,20 @@ QUESTION_PATTERNS = [
     # the aux verb specifically so short acknowledgments like "Will do."
     # don't false-positive on the aux verb alone.
     (re.compile(rf"^\s*{_AUX_START}\s+{_SUBJECT}\b", re.IGNORECASE), 0.45),
+    # Imperative asks — flagged 2026-08-14 as a real gap: interview-style
+    # prompts like "Tell me about a time you..." or "Write a function
+    # that..." are asks the copilot needs a suggestion for, but they're
+    # commands, not questions — no wh-word, no aux-subject inversion, and
+    # usually no "?". Anchored to a small closed set of imperative verbs
+    # that are near-universally conversation asks (not to be confused
+    # with action-item imperatives like "send me the file", which is why
+    # this list stays narrow rather than matching any leading verb).
+    (re.compile(
+        r"^\s*(tell me|describe|explain|walk me through|talk me through|"
+        r"give me an example|give an example|write (a|an|some)|"
+        r"implement|design|list|name|outline|summarize|compare|define)\b",
+        re.IGNORECASE,
+    ), 0.65),
 ]
 
 DECISION_PATTERNS = [

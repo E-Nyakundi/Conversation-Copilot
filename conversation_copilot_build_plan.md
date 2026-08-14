@@ -249,17 +249,60 @@ Real-session testing surfaced that this "slower the longer you talk" symptom was
 - **GPU: does not help.** The RX 560 is AMD (GCN 4), not Nvidia. `faster-whisper` runs on CTranslate2, whose GPU backend is CUDA-only (Nvidia) — there's no CTranslate2 ROCm/ HIP support for AMD cards, so `WHISPER_DEVICE=cuda` simply isn't an option here. This stays CPU-only either way; the RX 560 is not a lever available to this project.
 - **Decision:** not yet finalized — running locally on this box would improve latency (CPU headroom, zero BizYangu contention) but trades away the always-on/remote-accessible nature of the VM deployment (Caddy/sslip.io TLS, reachable from a phone over cellular per Phase 0's original test). Worth deciding deliberately rather than defaulting: is always-on remote access actually needed for how this gets used, or is a local run (only available when that PC is on) an acceptable trade for a personal tool? Revisit before committing either way — no code changes hinge on this choice besides `WHISPER_DEVICE` staying `cpu` regardless.
 
+### Phase 1 revisit — Session-persistent speaker diarization *(planned — not started; priority 1 per 2026-08-14 discussion)*
+
+The naive pause-based labeler above is a real heuristic, not a placeholder,
+but its own docstring already admits the failure modes: wrong on quick
+back-and-forth with no pause, wrong on solo monologue with pauses. The
+opt-in `PyannoteSpeakerLabeler` fixes the first problem but not the
+second — it runs **per finalized segment independently**, so it can say
+"the dominant voice in *this* segment" but has no memory that Speaker A
+from three turns ago is the same Speaker A now. Decided: go all the way
+to a full session-persistent version rather than shipping the
+segment-only fix as an interim step.
+
+- [ ] Turn on real diarization as the default path (`ENABLE_DIARIZATION`
+  effectively always-on, not opt-in) — replaces the gap-based flip, fixes
+  interruption/quick-exchange mislabeling on its own.
+- [ ] Extract a speaker **embedding** per finalized segment (pyannote can
+  produce one directly, or a lighter dedicated embedding model —
+  Resemblyzer/SpeechBrain ECAPA — if running the full diarization
+  pipeline on every turn proves too slow on the VM's 2 vCPU/5.8GB RAM,
+  shared with BizYangu per §6a's existing constraint note).
+- [ ] Per-session speaker registry: a small in-memory store (scoped like
+  `NaivePauseSpeakerLabeler` already is — one instance per WS connection)
+  holding a running centroid embedding per speaker seen so far in this
+  session. Each new segment's embedding is compared via cosine similarity
+  against existing centroids; match → label as that speaker and update
+  the centroid (moving average); no match above threshold → register as
+  a new speaker. Naturally extends past the current hardcoded 2-speaker
+  (A/B) assumption if a session has more voices, though 2-speaker is
+  still the primary case to validate first.
+- [ ] Benchmark latency/CPU cost of running this on every finalized turn
+  on the actual VM before committing to it as the default — this is real
+  new load on shared, already-constrained infra, not a free upgrade.
+  Fall back to segment-only diarization (current opt-in behavior) if the
+  session-persistent version proves too expensive live, rather than
+  blocking the whole feature on it.
+- [ ] Decide what happens on a Groq/local-fallback-style degradation
+  here too: if diarization fails or times out for a segment, fall back
+  to the naive pause labeler for that turn rather than dropping the
+  speaker label entirely.
+
 ### Phase 2 — Conversation Understanding *(feasibility-gated — do not skip the checkpoint)*
 
 - [x] Build extraction module for: questions, decisions, requests, objections, action items, topic changes — `conversation/intent.py`, rule-based (regex/keyword), zero extra deps, runs inline after each finalized `Turn`
 - [ ] Benchmark 2–3 local LLM sizes for extraction accuracy vs. latency against the rule-based baseline above — not started; needs llama.cpp + a GGUF model, which isn't wired in yet
 - [x] Test against a set of real or realistic transcript samples, score extraction accuracy manually — `conversation/fixtures/sample_transcripts.json` (3 sample dialogues) + `python manage.py score_extraction`
 - [ ] **Go/no-go checkpoint:** rule-based baseline scored manually against the 3 bundled sample transcripts — question/decision/request/objection/action_item all look solid; topic_change is the weak one (turn-level lexical overlap is a genuinely weak signal, see the caveat in `intent.py`). Rescore against your own real transcripts before treating this as settled, and don't lean on topic_change downstream until it's been tightened or replaced.
+- [ ] **Imperative/task detection — planned, not started (2026-08-14).** `QUESTION_PATTERNS` only fires on `?`-terminated, wh-word-led, or aux-inverted sentences — it silently misses imperative asks with none of those markers ("Tell me about a time you...", "Write a function that...", "Walk me through..."), which is a common phrasing for both behavioral interview questions and coding problems. Add an `IMPERATIVE`/task pattern set (imperative verb starts — "write", "explain", "implement", "design", "describe", "walk me through" — plus explicit markers like "your task is/your job is to") so these stop being invisible to extraction entirely. This is the prerequisite for coding-task handling below, not a separate fix.
+- [ ] **Context window for multi-sentence problem statements — planned, not started.** Coding/behavioral prompts are often spoken across several turns before the actual imperative ask (constraints, setup, then "write a script that..."). `build_suggestion_prompt`'s `context_turns` already exists for grounding, but needs to reliably reach back far enough to capture the whole problem, not just the last turn or two — tune/extend the window specifically for imperative-triggered suggestions.
 
 ### Phase 3 — AI Copilot (basic suggestions) *(v4: now includes the hybrid router, pulled forward from Phase 7)*
 
 - [x] Pipeline: detected question → conversation context → knowledge base (if available) → local LLM → suggested answer — `ai/local_llm.py` (llama.cpp via llama-cpp-python, lazy singleton, same deferred-import pattern as `stt/engine.py`/`audio/vad.py`) + `ai/prompts.py` (prompt construction) + `audio/consumers.py` (`_generate_suggestion`/`_extract_and_emit` wiring). No knowledge base yet — that's Phase 6, and `ai/prompts.py` is structured so RAG context slots in later without a rewrite.
 - [x] Single-shot suggestions only (no completion mode yet) — one `create_chat_completion` call per detected question, no streaming tokens.
+- [x] **Imperative-ask extraction gap (flagged 2026-08-14, closed 2026-08-14)** — `conversation/intent.py`'s `QUESTION_PATTERNS` gained a fourth pattern: a small closed set of imperative verbs (`tell me`, `describe`, `explain`, `walk/talk me through`, `give (me) an example`, `write a/an/some`, `implement`, `design`, `list`, `name`, `outline`, `summarize`, `compare`, `define`) anchored to sentence-start, confidence 0.65. Catches interview-style asks like "Tell me about a time you..." or "Write a function that..." that have no wh-word, no aux-subject inversion, and usually no "?" — previously extracted as nothing at all. Deliberately narrow (not "any leading verb") so it doesn't collide with action-item imperatives like "send me the file" — spot-checked: that sentence still classifies as `request`/`action_item` only, not `question`. Verified with a standalone interpreter check of `conversation.intent.extract()` (no Django needed for this module) since this sandbox still has no Django install and no network path to `pip install` one (disk also hit "No space left on device" mid-attempt) — same toolchain gap as the Flutter verification note below. Run the existing `score_extraction` management command against real transcripts as the next real check, once Django is available.
 - [x] Suggestion delivered to phone over WebSocket, rendered in a basic UI — WebSocket delivery is done (`{"type": "suggestion", ...}`, fired as a background `asyncio.create_task` per question so slow CPU inference never blocks live audio ingestion on that connection); persisted to a new `Suggestion` model (`conversation/models.py`, migration `0003_suggestion.py`) and exposed via `GET /api/sessions/<id>/suggestions/`. Confirmed rendering as suggestion bubbles in the actual Flutter screen (`live_session_screen.dart`), not just `audio_test.html` — see Phase 1 note above.
 - [ ] **LLM strategy resolved (v4):** `LLM_MODEL_PATH` → a **3B-class** GGUF model (`Qwen2.5-3B-Instruct` or `Llama-3.2-3B-Instruct`, Q4_K_M) sized for the VM's actual 5.8GB RAM / 2 vCPU ceiling — this is the always-available, no-network fallback, not the primary path.
 - [x] **New:** `ai/cloud_router.py` — Groq client (free tier, OpenAI-compatible API) as the **primary** suggestion path; falls back to the local 3B model on network failure, timeout, rate-limit, or empty response. `audio/consumers.py._generate_suggestion` now calls `ai.cloud_router.get_suggestion()` instead of `ai.local_llm.get_llm()` directly — same input/output shape, no other caller changes needed. `groq` added to `requirements.txt` (lightweight, installed unconditionally, unlike the still-commented-out `llama-cpp-python`). `GROQ_API_KEY` set on the VM.

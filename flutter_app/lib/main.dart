@@ -4,96 +4,21 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-import 'screens/home_screen.dart';
 import 'screens/live_session_screen.dart';
-import 'screens/onboarding_screen.dart';
-import 'screens/session_history_screen.dart';
-import 'screens/settings_screen.dart';
-import 'theme.dart';
 
 void main() {
   runApp(const CopilotApp());
 }
 
-/// Root widget. Onboarding is shown once per app launch and gates the main
-/// app shell — there's no persistence layer yet (see build plan), so this
-/// is in-memory only and will show again on the next cold start. That's an
-/// acceptable gap for now; wiring a "seen onboarding" flag needs a local
-/// storage package that isn't in pubspec.yaml yet (e.g. shared_preferences).
-class CopilotApp extends StatefulWidget {
+class CopilotApp extends StatelessWidget {
   const CopilotApp({super.key});
-
-  @override
-  State<CopilotApp> createState() => _CopilotAppState();
-}
-
-class _CopilotAppState extends State<CopilotApp> {
-  bool _onboarded = false;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Conversation Copilot',
-      debugShowCheckedModeBanner: false,
-      theme: buildCopilotTheme(),
-      home: _onboarded
-          ? const AppShell()
-          : OnboardingScreen(onDone: () => setState(() => _onboarded = true)),
-    );
-  }
-}
-
-/// Main app shell: bottom nav across Home / History / Settings. Live
-/// Session is reached via Home's Start Session button (or Session
-/// Detail/History rows push their own routes) rather than living in the
-/// tab bar itself, since it's a full-screen, focused, in-progress-call
-/// experience rather than something you'd casually tab back and forth
-/// into mid-session.
-class AppShell extends StatefulWidget {
-  const AppShell({super.key});
-
-  @override
-  State<AppShell> createState() => _AppShellState();
-}
-
-class _AppShellState extends State<AppShell> {
-  int _index = 0;
-
-  void _goToTab(int i) => setState(() => _index = i);
-
-  void _startSession() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const LiveSessionScreen()),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final screens = [
-      HomeScreen(
-        onStartSession: _startSession,
-        onOpenSettings: () => _goToTab(2),
-        onViewAllSessions: () => _goToTab(1),
-      ),
-      const SessionHistoryScreen(showBackButton: false),
-      const SettingsScreen(showBackButton: false),
-    ];
-
-    return Scaffold(
-      backgroundColor: CopilotColors.ink,
-      body: SafeArea(
-        bottom: false,
-        child: IndexedStack(index: _index, children: screens),
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: _goToTab,
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Home'),
-          NavigationDestination(icon: Icon(Icons.history), label: 'History'),
-          NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'Settings'),
-        ],
-      ),
+      theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
+      home: const PingTestScreen(),
     );
   }
 }
@@ -104,11 +29,6 @@ class _AppShellState extends State<AppShell> {
 /// timestamps added. Round trip is computed entirely on this device's own
 /// clock (now - client_sent_at), so it's unaffected by any clock skew
 /// between phone and server.
-///
-/// This was the very first Phase 0/1 test harness and predates the
-/// designed app — it's no longer part of primary navigation (see
-/// Phase 3.5), but stays reachable from Settings > Advanced >
-/// "Connectivity test" since it's still a useful raw debug tool.
 class PingTestScreen extends StatefulWidget {
   const PingTestScreen({super.key});
 
@@ -236,7 +156,7 @@ class _PingTestScreenState extends State<PingTestScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.mic),
-            tooltip: 'Live Session',
+            tooltip: 'Live Session (Phase 1)',
             onPressed: () {
               Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const LiveSessionScreen()),
