@@ -4,7 +4,12 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'screens/home_screen.dart';
 import 'screens/live_session_screen.dart';
+import 'screens/onboarding_screen.dart';
+import 'screens/session_history_screen.dart';
+import 'screens/settings_screen.dart';
+import 'theme.dart';
 
 void main() {
   runApp(const CopilotApp());
@@ -17,8 +22,108 @@ class CopilotApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Conversation Copilot',
-      theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
-      home: const PingTestScreen(),
+      theme: ThemeData(
+        colorSchemeSeed: CopilotColors.blue,
+        useMaterial3: true,
+        scaffoldBackgroundColor: CopilotColors.ink,
+        brightness: Brightness.dark,
+      ),
+      home: const AppRoot(),
+    );
+  }
+}
+
+/// Gates the real app shell behind onboarding on first run.
+///
+/// 2026-08-14: this class — and the AppShell it wraps — didn't exist in
+/// main.dart despite the build plan marking Phase 3.5's implementation
+/// pass "[x] done" and session_history_screen.dart's own doc comment
+/// already referring to "AppShell in main.dart" as an established thing.
+/// The six screens (home/history/settings/onboarding/session
+/// detail/live session) were all built expecting this shell to exist;
+/// main.dart itself just never got the corresponding edit — apparently
+/// dropped somewhere in merging parallel local/VM copies back together.
+/// This restores it to match what the plan and the screens already
+/// assumed was there.
+///
+/// Per the plan: "seen onboarding" is in-memory only for now (resets on
+/// cold start) — a shared_preferences-backed flag is noted follow-up
+/// work once that dependency is added to pubspec.yaml.
+class AppRoot extends StatefulWidget {
+  const AppRoot({super.key});
+
+  @override
+  State<AppRoot> createState() => _AppRootState();
+}
+
+class _AppRootState extends State<AppRoot> {
+  bool _onboarded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_onboarded) {
+      return OnboardingScreen(onDone: () => setState(() => _onboarded = true));
+    }
+    return const AppShell();
+  }
+}
+
+/// Bottom-nav shell across Home / History / Settings.
+///
+/// Deliberate deviation from the onboarding/home mockups' gear-icon-only
+/// Settings access: three root destinations map more naturally onto
+/// Flutter's NavigationBar tab idiom than a single-screen-plus-gear
+/// pattern. Home's own gear icon still jumps straight to the Settings
+/// tab (via [_goToSettings]), so the one-tap access the mockup intended
+/// is preserved even though the navigation model around it changed.
+class AppShell extends StatefulWidget {
+  const AppShell({super.key});
+
+  @override
+  State<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends State<AppShell> {
+  int _tab = 0;
+
+  void _goToSettings() => setState(() => _tab = 2);
+
+  void _startSession() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const LiveSessionScreen()),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screens = [
+      HomeScreen(
+        onStartSession: _startSession,
+        onOpenSettings: _goToSettings,
+        onViewAllSessions: () => setState(() => _tab = 1),
+      ),
+      // showBackButton: false — these are root tab destinations here,
+      // not pushed routes; the mockups' back arrow is for when they're
+      // reached via a pushed route elsewhere (e.g. Settings' own
+      // "Connectivity test" row still pushes the Phase 0 ping harness
+      // as a real route, which does want a back button).
+      const SessionHistoryScreen(showBackButton: false),
+      const SettingsScreen(showBackButton: false),
+    ];
+
+    return Scaffold(
+      backgroundColor: CopilotColors.ink,
+      body: IndexedStack(index: _tab, children: screens),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: (i) => setState(() => _tab = i),
+        backgroundColor: CopilotColors.panel,
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
+          NavigationDestination(icon: Icon(Icons.history_outlined), selectedIcon: Icon(Icons.history), label: 'History'),
+          NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
+        ],
+      ),
     );
   }
 }
@@ -29,6 +134,9 @@ class CopilotApp extends StatelessWidget {
 /// timestamps added. Round trip is computed entirely on this device's own
 /// clock (now - client_sent_at), so it's unaffected by any clock skew
 /// between phone and server.
+///
+/// No longer the app's `home:` — reachable from Settings' "Connectivity
+/// test" row (see settings_screen.dart) as a pushed route instead.
 class PingTestScreen extends StatefulWidget {
   const PingTestScreen({super.key});
 
