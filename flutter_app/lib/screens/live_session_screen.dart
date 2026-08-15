@@ -3,12 +3,21 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../audio/capture.dart';
+import '../theme.dart';
 import '../ws/socket.dart';
 
 /// Phase 1: the Flutter equivalent of server/audio_test.html — mic capture
 /// -> WebSocket -> live transcript, with Phase 3 suggestion bubbles layered
 /// in. Talks to AudioStreamConsumer at ws/audio/ (or ws/audio/<uuid>/ to
 /// resume a session).
+///
+/// Phase 3.5/implementation: restyled to the instrument-panel visual
+/// identity (design/mockups/live_session_mockup.html) — telemetry strip
+/// (status dot + level toggle) up top, transcript + suggestion cards in
+/// the middle, amplitude-ring mic control at the bottom. All WS/mic
+/// logic below is unchanged from the working test-harness version; only
+/// the build() method and a couple of small additions (connect sheet,
+/// ring pulse animation) are new.
 class LiveSessionScreen extends StatefulWidget {
   const LiveSessionScreen({super.key});
 
@@ -65,7 +74,8 @@ class _TranscriptEntry {
   final double? extractionConfidence;
 }
 
-class _LiveSessionScreenState extends State<LiveSessionScreen> {
+class _LiveSessionScreenState extends State<LiveSessionScreen>
+    with SingleTickerProviderStateMixin {
   final _urlController = TextEditingController(
     text: 'wss://145-241-102-99.sslip.io/ws/audio/',
   );
@@ -94,6 +104,16 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
   // DEFAULT_ANSWER_LEVEL — stays in sync with the server without needing
   // an explicit message until the user actually changes it.
   AnswerLevel _answerLevel = AnswerLevel.medium;
+
+  // Drives the amplitude-ring pulse while recording. There's no real
+  // per-sample amplitude signal exposed by MicCapture (see capture.dart) —
+  // this is a steady pulse to communicate "listening", not a true VAD
+  // level meter. Swap for a real level stream if MicCapture ever exposes
+  // one.
+  late final AnimationController _ringController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat(reverse: true);
 
   void _setAnswerLevel(AnswerLevel level) {
     setState(() => _answerLevel = level);
@@ -260,6 +280,68 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
     });
   }
 
+  void _toggleMic() {
+    if (!_connected) {
+      _showConnectSheet();
+      return;
+    }
+    _recording ? _stopMic() : _startMic();
+  }
+
+  void _showConnectSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: CopilotColors.panel,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (sheetContext) {
+        return Padding(
+          padding: EdgeInsets.fromLTRB(
+              20, 20, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Connect to server',
+                style: TextStyle(
+                  fontFamily: CopilotFonts.display,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 16,
+                  color: CopilotColors.paper,
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _urlController,
+                style: const TextStyle(color: CopilotColors.paper, fontSize: 13),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: CopilotColors.panelRaised,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide.none,
+                  ),
+                  labelText: 'wss://.../ws/audio/',
+                  labelStyle: const TextStyle(color: CopilotColors.mist),
+                ),
+              ),
+              const SizedBox(height: 14),
+              ElevatedButton(
+                onPressed: () async {
+                  await _connect();
+                  if (sheetContext.mounted) Navigator.of(sheetContext).pop();
+                },
+                child: const Text('Connect'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   @override
   void dispose() {
     _msgSub?.cancel();
@@ -270,210 +352,473 @@ class _LiveSessionScreenState extends State<LiveSessionScreen> {
     _urlController.dispose();
     _scrollController.dispose();
     _fullTranscriptScrollController.dispose();
+    _ringController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Live Session')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
+      backgroundColor: CopilotColors.ink,
+      body: SafeArea(
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(
-              controller: _urlController,
-              enabled: !_connected,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                labelText:
-                    'wss://.../ws/audio/ (append a session id to resume)',
-              ),
+            _TelemetryStrip(
+              connected: _connected,
+              recording: _recording,
+              status: _status,
+              answerLevel: _answerLevel,
+              onLevelChanged: _setAnswerLevel,
             ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                ElevatedButton(
-                  onPressed: _connected ? null : _connect,
-                  child: const Text('Connect'),
-                ),
-                ElevatedButton(
-                  onPressed: _connected && !_recording ? _startMic : null,
-                  child: const Text('Start Mic'),
-                ),
-                ElevatedButton(
-                  onPressed: _recording ? _stopMic : null,
-                  child: const Text('Stop Mic'),
-                ),
-                ElevatedButton(
-                  onPressed: _connected ? _endSession : null,
-                  child: const Text('End Session'),
-                ),
-                ElevatedButton(
-                  onPressed: _connected ? _disconnect : null,
-                  child: const Text('Disconnect'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(_status, style: const TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                const Text('Answer length: ',
-                    style: TextStyle(fontWeight: FontWeight.w600)),
-                const SizedBox(width: 4),
-                SegmentedButton<AnswerLevel>(
-                  segments: AnswerLevel.values
-                      .map((l) => ButtonSegment(value: l, label: Text(l.label)))
-                      .toList(),
-                  selected: {_answerLevel},
-                  onSelectionChanged: (selection) => _setAnswerLevel(selection.first),
-                  showSelectedIcon: false,
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            const Text('Full transcript',
-                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-            const SizedBox(height: 4),
             Expanded(
-              flex: 3,
-              child: Container(
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade300),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                padding: const EdgeInsets.all(8),
-                child: SingleChildScrollView(
-                  controller: _fullTranscriptScrollController,
-                  child: RichText(
-                    text: TextSpan(
-                      style: DefaultTextStyle.of(context)
-                          .style
-                          .copyWith(fontSize: 13, height: 1.4),
-                      children: [
-                        TextSpan(text: _fullTranscriptLines.join('\n')),
+              child: DefaultTabController(
+                length: 2,
+                child: Column(
+                  children: [
+                    const TabBar(
+                      labelColor: CopilotColors.paper,
+                      unselectedLabelColor: CopilotColors.mist,
+                      indicatorColor: CopilotColors.amber,
+                      labelStyle: TextStyle(
+                          fontFamily: CopilotFonts.display,
+                          fontWeight: FontWeight.w500,
+                          fontSize: 12.5),
+                      tabs: [
+                        Tab(text: 'Transcript'),
+                        Tab(text: 'Suggestions'),
                       ],
                     ),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            const Text('Extracted questions & suggestions',
-                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-            const SizedBox(height: 4),
-            Expanded(
-              flex: 2,
-              child: Container(
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade300),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                padding: const EdgeInsets.all(8),
-                child: ListView.builder(
-                  controller: _scrollController,
-                  itemCount: _entries.length,
-                  itemBuilder: (context, index) {
-                    final entry = _entries[index];
-                    if (entry.kind == _EntryKind.finalTurn) {
-                      final conf =
-                          entry.confidence?.toStringAsFixed(2) ?? 'n/a';
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: RichText(
-                          text: TextSpan(
-                            style: DefaultTextStyle.of(context).style,
-                            children: [
-                              TextSpan(
-                                text: '${entry.speaker}: ',
-                                style:
-                                    const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                              TextSpan(text: entry.text),
-                              TextSpan(
-                                text: '  (confidence: $conf)',
-                                style: TextStyle(
-                                    color: Colors.grey.shade500, fontSize: 11),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    }
-                    final levelLabel = entry.answerLevel != null
-                        ? entry.answerLevel![0].toUpperCase() +
-                            entry.answerLevel!.substring(1)
-                        : null;
-                    // Extraction confidence, not model confidence — see
-                    // the note on _TranscriptEntry.extractionConfidence.
-                    final confLabel = entry.extractionConfidence != null
-                        ? 'extraction ${(entry.extractionConfidence! * 100).round()}%'
-                        : null;
-                    return Container(
-                      margin: const EdgeInsets.only(left: 16, top: 4, bottom: 8),
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFEEF6FF),
-                        border: const Border(
-                            left: BorderSide(color: Color(0xFF4A90D9), width: 3)),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    Expanded(
+                      child: TabBarView(
                         children: [
-                          RichText(
-                            text: TextSpan(
-                              style: DefaultTextStyle.of(context)
-                                  .style
-                                  .copyWith(fontSize: 13),
-                              children: [
-                                const TextSpan(
-                                  text: '💡 Suggested answer: ',
-                                  style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      color: Color(0xFF2B5F94)),
-                                ),
-                                TextSpan(text: entry.text),
-                              ],
-                            ),
+                          _FullTranscriptView(
+                            lines: _fullTranscriptLines,
+                            controller: _fullTranscriptScrollController,
                           ),
-                          const SizedBox(height: 4),
-                          Wrap(
-                            spacing: 8,
-                            children: [
-                              if (levelLabel != null)
-                                Text('level: $levelLabel',
-                                    style: TextStyle(
-                                        color: Colors.grey.shade500,
-                                        fontSize: 11)),
-                              if (confLabel != null)
-                                Text(confLabel,
-                                    style: TextStyle(
-                                        color: Colors.grey.shade500,
-                                        fontSize: 11)),
-                              if (entry.latencyMs != null)
-                                Text('${entry.latencyMs}ms',
-                                    style: TextStyle(
-                                        color: Colors.grey.shade500,
-                                        fontSize: 11)),
-                            ],
+                          _EntriesView(
+                            entries: _entries,
+                            controller: _scrollController,
                           ),
                         ],
                       ),
-                    );
-                  },
+                    ),
+                  ],
                 ),
               ),
+            ),
+            _Controls(
+              connected: _connected,
+              recording: _recording,
+              ringController: _ringController,
+              onMicTap: _toggleMic,
+              onEndSession: _connected ? _endSession : null,
+              onDisconnect: _connected ? () => _disconnect() : null,
             ),
           ],
         ),
       ),
     );
   }
+}
+
+class _TelemetryStrip extends StatelessWidget {
+  const _TelemetryStrip({
+    required this.connected,
+    required this.recording,
+    required this.status,
+    required this.answerLevel,
+    required this.onLevelChanged,
+  });
+
+  final bool connected;
+  final bool recording;
+  final String status;
+  final AnswerLevel answerLevel;
+  final ValueChanged<AnswerLevel> onLevelChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 14),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: CopilotColors.hairline)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: recording ? CopilotColors.amber : CopilotColors.hairline,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              status,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontFamily: CopilotFonts.mono,
+                fontSize: 12.5,
+                color: CopilotColors.paper,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            decoration: BoxDecoration(
+              color: CopilotColors.panel,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            padding: const EdgeInsets.all(2),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final level in AnswerLevel.values)
+                  GestureDetector(
+                    onTap: () => onLevelChanged(level),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: level == answerLevel ? CopilotColors.panelRaised : null,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        level.name,
+                        style: TextStyle(
+                          fontFamily: CopilotFonts.mono,
+                          fontSize: 10,
+                          color: level == answerLevel
+                              ? CopilotColors.amber
+                              : CopilotColors.mist,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FullTranscriptView extends StatelessWidget {
+  const _FullTranscriptView({required this.lines, required this.controller});
+
+  final List<String> lines;
+  final ScrollController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    if (lines.isEmpty) {
+      return const _EmptyPane(text: 'Nothing transcribed yet.\nStart the mic to begin.');
+    }
+    return SingleChildScrollView(
+      controller: controller,
+      padding: const EdgeInsets.all(20),
+      child: Text(
+        lines.join('\n\n'),
+        style: const TextStyle(
+          fontSize: 13.5,
+          height: 1.55,
+          color: CopilotColors.paper,
+        ),
+      ),
+    );
+  }
+}
+
+class _EntriesView extends StatelessWidget {
+  const _EntriesView({required this.entries, required this.controller});
+
+  final List<_TranscriptEntry> entries;
+  final ScrollController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) {
+      return const _EmptyPane(
+          text: 'Questions and suggested answers\nwill appear here as they\'re detected.');
+    }
+    return ListView.builder(
+      controller: controller,
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+      itemCount: entries.length,
+      itemBuilder: (context, index) {
+        final entry = entries[index];
+        if (entry.kind == _EntryKind.finalTurn) {
+          final conf = entry.confidence != null
+              ? '${(entry.confidence! * 100).round()}%'
+              : null;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  (entry.speaker ?? '?').toUpperCase(),
+                  style: const TextStyle(
+                    fontFamily: CopilotFonts.mono,
+                    fontSize: 10,
+                    letterSpacing: 1,
+                    color: CopilotColors.mist,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  entry.text,
+                  style: const TextStyle(
+                      fontSize: 14.5, height: 1.55, color: CopilotColors.paper),
+                ),
+                if (conf != null) ...[
+                  const SizedBox(height: 3),
+                  Text('confidence $conf',
+                      style: const TextStyle(
+                          fontFamily: CopilotFonts.mono,
+                          fontSize: 10,
+                          color: CopilotColors.mist)),
+                ],
+              ],
+            ),
+          );
+        }
+
+        final levelLabel = entry.answerLevel;
+        final confLabel = entry.extractionConfidence != null
+            ? 'conf ${(entry.extractionConfidence! * 100).round()}%'
+            : null;
+        return Container(
+          margin: const EdgeInsets.only(bottom: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: const BoxDecoration(
+            color: CopilotColors.panel,
+            border: Border(left: BorderSide(color: CopilotColors.blue, width: 3)),
+            borderRadius: BorderRadius.horizontal(right: Radius.circular(10)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.lightbulb_outline, size: 13, color: CopilotColors.blue),
+                  SizedBox(width: 6),
+                  Text(
+                    'Suggested answer',
+                    style: TextStyle(
+                      fontFamily: CopilotFonts.display,
+                      fontWeight: FontWeight.w500,
+                      fontSize: 12,
+                      color: CopilotColors.blue,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                entry.text,
+                style: const TextStyle(fontSize: 13.5, height: 1.5, color: CopilotColors.paper),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  if (levelLabel != null)
+                    Text(levelLabel,
+                        style: const TextStyle(
+                            fontFamily: CopilotFonts.mono,
+                            fontSize: 10,
+                            color: CopilotColors.mist)),
+                  if (entry.latencyMs != null) ...[
+                    const SizedBox(width: 12),
+                    Text('${entry.latencyMs}ms',
+                        style: const TextStyle(
+                            fontFamily: CopilotFonts.mono,
+                            fontSize: 10,
+                            color: CopilotColors.mist)),
+                  ],
+                  if (confLabel != null) ...[
+                    const SizedBox(width: 12),
+                    Text(confLabel,
+                        style: const TextStyle(
+                            fontFamily: CopilotFonts.mono,
+                            fontSize: 10,
+                            color: CopilotColors.mist)),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _EmptyPane extends StatelessWidget {
+  const _EmptyPane({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Text(
+          text,
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: CopilotColors.mist, fontSize: 12.5, height: 1.5),
+        ),
+      ),
+    );
+  }
+}
+
+class _Controls extends StatelessWidget {
+  const _Controls({
+    required this.connected,
+    required this.recording,
+    required this.ringController,
+    required this.onMicTap,
+    required this.onEndSession,
+    required this.onDisconnect,
+  });
+
+  final bool connected;
+  final bool recording;
+  final AnimationController ringController;
+  final VoidCallback onMicTap;
+  final VoidCallback? onEndSession;
+  final VoidCallback? onDisconnect;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 20),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: CopilotColors.hairline)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _SideButton(
+            icon: Icons.stop_circle_outlined,
+            onTap: onEndSession,
+            enabled: onEndSession != null,
+          ),
+          const SizedBox(width: 28),
+          GestureDetector(
+            onTap: onMicTap,
+            child: SizedBox(
+              width: 84,
+              height: 84,
+              child: AnimatedBuilder(
+                animation: ringController,
+                builder: (context, child) {
+                  return CustomPaint(
+                    painter: _RingPainter(
+                      pulse: recording ? ringController.value : 0,
+                      active: recording,
+                    ),
+                    child: child,
+                  );
+                },
+                child: Center(
+                  child: Container(
+                    width: 60,
+                    height: 60,
+                    decoration: const BoxDecoration(
+                      color: CopilotColors.panelRaised,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      recording ? Icons.mic : Icons.mic_none,
+                      color: CopilotColors.amber,
+                      size: 24,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 28),
+          _SideButton(
+            icon: Icons.close,
+            onTap: onDisconnect,
+            enabled: onDisconnect != null,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SideButton extends StatelessWidget {
+  const _SideButton({required this.icon, required this.onTap, required this.enabled});
+
+  final IconData icon;
+  final VoidCallback? onTap;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: Container(
+        width: 44,
+        height: 44,
+        decoration: const BoxDecoration(
+          color: CopilotColors.panel,
+          shape: BoxShape.circle,
+        ),
+        child: Icon(
+          icon,
+          size: 18,
+          color: enabled ? CopilotColors.mist : CopilotColors.hairline,
+        ),
+      ),
+    );
+  }
+}
+
+/// Segmented ring matching the mockup's `.ring-tick` motif. `pulse` is a
+/// 0..1 animation value; `active` switches between the static
+/// mostly-dim look (idle) and a pulse where a rotating band of ticks
+/// lights up amber (recording) — see the docstring on `_ringController`
+/// for why this isn't driven by real audio amplitude yet.
+class _RingPainter extends CustomPainter {
+  _RingPainter({required this.pulse, required this.active});
+
+  final double pulse;
+  final bool active;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = size.width / 2 - 4;
+    const tickCount = 16;
+    final dim = Paint()
+      ..color = CopilotColors.amberDim
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round;
+    final lit = Paint()
+      ..color = CopilotColors.amber
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round;
+
+    final litCount = active ? (3 + (pulse * 4)).round() : 0;
+    for (var i = 0; i < tickCount; i++) {
+      final angle = (i / tickCount) * 2 * 3.14159265 - 3.14159265 / 2;
+      final outer = center + Offset.fromDirection(angle, radius);
+      final inner = center + Offset.fromDirection(angle, radius - 9);
+      final lightsUp = active && i < litCount;
+      canvas.drawLine(inner, outer, lightsUp ? lit : dim);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _RingPainter oldDelegate) =>
+      oldDelegate.pulse != pulse || oldDelegate.active != active;
 }
