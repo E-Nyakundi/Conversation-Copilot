@@ -387,7 +387,14 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             return
 
         extraction_objs = [
-            Extraction(session=self.session, turn=turn, type=item.type, text=item.text, confidence=item.confidence)
+            Extraction(
+                session=self.session,
+                turn=turn,
+                type=item.type,
+                text=item.text,
+                confidence=item.confidence,
+                subtype=item.subtype,
+            )
             for item in found
         ]
         await asyncio.to_thread(Extraction.objects.bulk_create, extraction_objs)
@@ -481,6 +488,19 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         )
 
         context_limit = int(os.environ.get("SUGGESTION_CONTEXT_TURNS", "6"))
+
+        # Imperative asks ("write a function that...", "tell me about a
+        # time you...") are routinely set up across several prior turns —
+        # constraints, background — before the imperative sentence itself
+        # lands. An ordinary question ("what time is it?") doesn't need
+        # that; widen the window only when intent.py actually tagged this
+        # extraction as an imperative match (see Extraction.subtype).
+        # Separate env var (not a multiplier on context_limit) so each
+        # can be tuned independently once real usage data exists.
+        if extraction.subtype == "imperative":
+            context_limit = int(
+                os.environ.get("SUGGESTION_CONTEXT_TURNS_IMPERATIVE", "12")
+            )
 
         started = time.monotonic()
         try:

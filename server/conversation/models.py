@@ -101,6 +101,17 @@ class Extraction(models.Model):
     # which extractor produced a row.
     confidence = models.FloatField(null=True, blank=True)
 
+    # None for most rows; "imperative" when conversation/intent.py's
+    # imperative-verb pattern is what matched this question (2026-08-14 —
+    # see ExtractedItem.subtype and QUESTION_PATTERNS in intent.py for
+    # the full rationale). consumers.py._generate_suggestion reads this
+    # to widen the suggestion context window for imperative asks
+    # specifically, since those are often set up across several prior
+    # turns before the imperative sentence itself lands. Nullable/blank
+    # rather than a TYPE_CHOICES-style enum since this is expected to
+    # stay a single narrow flag, not grow into a general taxonomy.
+    subtype = models.CharField(max_length=20, null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

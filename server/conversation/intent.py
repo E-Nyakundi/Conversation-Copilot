@@ -48,6 +48,12 @@ class ExtractedItem:
     type: str
     text: str
     confidence: float  # rough heuristic strength, 0-1, NOT a calibrated probability
+    # None for most matches; "imperative" when QUESTION_PATTERNS' imperative-
+    # verb pattern is what matched (see that pattern's own comment). Used
+    # downstream (consumers.py) to widen the suggestion context window for
+    # these specifically, since coding/behavioral asks are often set up
+    # across several prior turns before the imperative sentence itself.
+    subtype: str | None = None
 
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -57,18 +63,18 @@ _AUX_START = r"(is|are|was|were|do|does|did|can|could|will|would|should|shall|ha
 _SUBJECT = r"(i|you|we|they|he|she|it|this|that|there)"
 
 QUESTION_PATTERNS = [
-    (re.compile(r"\?\s*$"), 0.9),
+    (re.compile(r"\?\s*$"), 0.9, None),
     # Leading wh-word without a question mark (e.g. transcription dropped
     # punctuation). Known false-positive source: subordinate clauses like
     # "When you switch units the totals don't recalculate" also start this
     # way — this pattern can't distinguish the two without more context,
     # which is exactly the kind of gap the scoring command is for.
-    (re.compile(rf"^\s*{_WH_WORDS}\b", re.IGNORECASE), 0.6),
+    (re.compile(rf"^\s*{_WH_WORDS}\b", re.IGNORECASE), 0.6, None),
     # Subject-aux inversion ("Will you...", "Is that...") without a
     # question mark — requires a subject pronoun/determiner right after
     # the aux verb specifically so short acknowledgments like "Will do."
     # don't false-positive on the aux verb alone.
-    (re.compile(rf"^\s*{_AUX_START}\s+{_SUBJECT}\b", re.IGNORECASE), 0.45),
+    (re.compile(rf"^\s*{_AUX_START}\s+{_SUBJECT}\b", re.IGNORECASE), 0.45, None),
     # Imperative asks — flagged 2026-08-14 as a real gap: interview-style
     # prompts like "Tell me about a time you..." or "Write a function
     # that..." are asks the copilot needs a suggestion for, but they're
@@ -77,12 +83,22 @@ QUESTION_PATTERNS = [
     # that are near-universally conversation asks (not to be confused
     # with action-item imperatives like "send me the file", which is why
     # this list stays narrow rather than matching any leading verb).
+    #
+    # Tagged subtype="imperative" (not just a confidence value) so
+    # downstream code can widen the suggestion context window for these
+    # specifically — see consumers.py._generate_suggestion. Coding/
+    # behavioral prompts are routinely set up across several prior turns
+    # (constraints, background) before the actual imperative ask lands,
+    # so these need to look back further than an ordinary "what time is
+    # it?" question does. Using subtype instead of matching on the 0.65
+    # confidence value downstream keeps that coupling explicit rather
+    # than implicit/fragile.
     (re.compile(
         r"^\s*(tell me|describe|explain|walk me through|talk me through|"
         r"give me an example|give an example|write (a|an|some)|"
         r"implement|design|list|name|outline|summarize|compare|define)\b",
         re.IGNORECASE,
-    ), 0.65),
+    ), 0.65, "imperative"),
 ]
 
 DECISION_PATTERNS = [
@@ -177,11 +193,29 @@ def _classify_sentence(sentence: str) -> list[ExtractedItem]:
         (ACTION_ITEM_PATTERNS, ACTION_ITEM),
     ):
         best_confidence = 0.0
-        for pattern, confidence in patterns:
+        best_subtype = None
+        for entry in patterns:
+            # Most pattern lists are (regex, confidence) pairs; only
+            # QUESTION_PATTERNS carries a third subtype element (used to
+            # flag imperative-ask matches for consumers.py's context
+            # window — see the comment there). Handling both shapes here
+            # avoids forcing every other pattern list to carry a always-
+            # None third field just for this one list's sake.
+            pattern, confidence = entry[0], entry[1]
+            subtype = entry[2] if len(entry) > 2 else None
             if pattern.search(sentence):
-                best_confidence = max(best_confidence, confidence)
+                if confidence > best_confidence:
+                    best_confidence = confidence
+                    best_subtype = subtype
+                elif confidence == best_confidence and subtype:
+                    best_subtype = subtype
         if best_confidence > 0:
-            items.append(ExtractedItem(type=item_type, text=sentence, confidence=round(best_confidence, 2)))
+            items.append(ExtractedItem(
+                type=item_type,
+                text=sentence,
+                confidence=round(best_confidence, 2),
+                subtype=best_subtype,
+            ))
     return items
 
 

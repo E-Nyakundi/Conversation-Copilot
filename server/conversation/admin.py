@@ -38,8 +38,8 @@ class TurnAdmin(admin.ModelAdmin):
 
 @admin.register(Extraction)
 class ExtractionAdmin(admin.ModelAdmin):
-    list_display = ("session", "type", "text", "confidence", "created_at")
-    list_filter = ("type",)
+    list_display = ("session", "type", "subtype", "text", "confidence", "created_at")
+    list_filter = ("type", "subtype")
 
 
 @admin.register(Suggestion)
