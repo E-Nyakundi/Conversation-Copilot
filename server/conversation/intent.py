@@ -93,8 +93,15 @@ QUESTION_PATTERNS = [
     # it?" question does. Using subtype instead of matching on the 0.65
     # confidence value downstream keeps that coupling explicit rather
     # than implicit/fragile.
+    #
+    # "walk through"/"talk through" WITHOUT "me" added 2026-08-15 — real
+    # spoken system-design prompts routinely drop "me" ("Walk through
+    # your trade-offs between false positives, latency, and cost."),
+    # and the "me"-required version was silently missing every one of
+    # those in testing. Confirmed via screenshots: this exact sentence
+    # produced zero extraction matches under the old pattern.
     (re.compile(
-        r"^\s*(tell me|describe|explain|walk me through|talk me through|"
+        r"^\s*(tell me|describe|explain|walk( me)? through|talk( me)? through|"
         r"give me an example|give an example|write (a|an|some)|"
         r"implement|design|list|name|outline|summarize|compare|define)\b",
         re.IGNORECASE,
