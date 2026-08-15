@@ -23,6 +23,16 @@ class MicCapture {
   static const sampleRate = 16000;
 
   bool _recording = false;
+
+  // Never read directly — flutter analyze flags this as unused, but it's
+  // intentional: holding a Dart-side reference to the JS-interop closure
+  // keeps it alive for the JS side to keep calling for as long as
+  // recording runs. Dropping this field (letting the closure become
+  // unreferenced from Dart) risks the closure being garbage collected
+  // mid-recording, which would silently stop audio chunks arriving with
+  // no error surfaced anywhere. Set to null in stop()/dispose() so it
+  // *can* be collected once recording actually ends.
+  // ignore: unused_field
   JSFunction? _jsCallback;
 
   bool get isRecording => _recording;
