@@ -58,6 +58,12 @@ class ExtractedItem:
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
+# Sentences at or under this word count, immediately following another
+# question sentence in the same turn, get folded into that question
+# rather than triggering their own suggestion. See extract()'s inline
+# comment (2026-08-15 fix) for the bug this addresses.
+_SHORT_QUESTION_FRAGMENT_WORDS = 4
+
 _WH_WORDS = r"(who|what|when|where|why|how|which|whose)"
 _AUX_START = r"(is|are|was|were|do|does|did|can|could|will|would|should|shall|has|have|had|am)"
 _SUBJECT = r"(i|you|we|they|he|she|it|this|that|there)"
@@ -260,8 +266,51 @@ def extract(text: str, previous_text: str | None = None) -> list[ExtractedItem]:
     against the turn as a whole, compared to previous_text).
     """
     items: list[ExtractedItem] = []
+    # Index into `items` of the most recent QUESTION item, but only kept
+    # valid while it still refers to the immediately preceding sentence
+    # (reset to None below whenever a sentence produces no question).
+    last_question_idx: int | None = None
+
     for sentence in _split_sentences(text):
-        items.extend(_classify_sentence(sentence))
+        sentence_items = _classify_sentence(sentence)
+        sentence_has_question = False
+
+        for item in sentence_items:
+            # 2026-08-15 fix: a turn like "...pre-aggregated stream? And
+            # why?" used to produce TWO separate question extractions —
+            # one per sentence — each independently firing its own
+            # _generate_suggestion call (confirmed via screenshot: two
+            # near-duplicate suggestion cards for what was clearly one
+            # question). A short trailing fragment directly after a
+            # question ("And why?", "Right?", "Correct?") is folded into
+            # the preceding question instead of standing alone. Gated on
+            # word count (not just "any adjacent question") so two
+            # genuinely separate, substantial questions asked back-to-
+            # back ("What's the plan? What's the timeline?") still get
+            # split into two real suggestions rather than being silently
+            # blobbed together.
+            if (
+                item.type == QUESTION
+                and last_question_idx is not None
+                and len(sentence.split()) <= _SHORT_QUESTION_FRAGMENT_WORDS
+            ):
+                prev = items[last_question_idx]
+                items[last_question_idx] = ExtractedItem(
+                    type=QUESTION,
+                    text=f"{prev.text} {item.text}",
+                    confidence=max(prev.confidence, item.confidence),
+                    subtype=prev.subtype or item.subtype,
+                )
+                sentence_has_question = True
+                continue
+
+            items.append(item)
+            if item.type == QUESTION:
+                last_question_idx = len(items) - 1
+                sentence_has_question = True
+
+        if not sentence_has_question:
+            last_question_idx = None
 
     topic_change = _detect_topic_change(text, previous_text)
     if topic_change:
