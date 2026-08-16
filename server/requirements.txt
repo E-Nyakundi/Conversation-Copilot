@@ -37,12 +37,16 @@ onnxruntime>=1.17,<2.0
 groq>=0.11,<1.0
 
 # Phase 3 — local LLM, the fallback path when Groq is unreachable/rate-
-# limited (optional, disabled for now due to network timeout issues with
-# large source wheel). Uncomment and rebuild if needed — until then,
-# ai/cloud_router.py's fallback will raise ModuleNotFoundError instead of
-# silently degrading, so suggestions simply fail closed if Groq is down
-# and this isn't installed:
-# llama-cpp-python>=0.3,<0.4
+# limited. Was disabled here due to network timeouts building the source
+# wheel (llama-cpp-python compiles a C++ extension via CMake — slow, and
+# easy to time out on a modest VM link). Fixed 2026-08-15 the same way
+# torch's CUDA-bloat problem was fixed earlier: point pip at the
+# project's own prebuilt-wheel index instead of building from source, so
+# `pip install` just downloads a .whl with no compile step at all. If
+# this VM ever gets a real GPU, there's a matching cu-suffixed index on
+# the same site for that instead of the plain "cpu" one below.
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+llama-cpp-python>=0.3,<0.4
 
 # Phase 1 revisit (2026-08-14) — speaker diarization, off by default on
 # a fresh install (the naive pause-based labeler in audio/speaker.py
