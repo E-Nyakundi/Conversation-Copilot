@@ -360,14 +360,48 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
 
     async def _extract_and_emit(self, turn: Turn):
         """
-        Phase 2: run the rule-based extractor on the just-finalized turn and
+        Phase 2: run the extractor on the just-finalized turn and
         persist/stream anything it finds. Runs after the `final` message so
         a slow or failing extraction never delays the transcript itself —
         extraction is best-effort on top of a working transcript, not a
         blocker for one.
+
+        EXTRACTION_MODE (2026-08-16) — "rule_based" (default) or "llm":
+        rule_based is conversation/intent.py's regex extractor: zero extra
+        latency, zero dependencies, works with no network — this is what's
+        actually been tested across every session so far, and what the
+        Phase 2 go/no-go scoring was run against.
+
+        "llm" is conversation/llm_extract.py — a real Groq call per
+        finalized turn that can catch questions/decisions/etc. phrased in
+        ways no regex pattern can (see that module's docstring for the
+        honest trade-offs: latency, cost, a different failure mode, no
+        offline story). This is opt-in, not a silent upgrade — switching
+        the default would mean shipping something with zero verification
+        against real sessions, the same mistake almost made with the
+        speaker diarization config earlier in this build.
+
+        On any llm-mode failure, this falls back to rule_based for that
+        turn rather than losing extraction entirely — same "never take the
+        session down over this" posture as the outer try/except below.
         """
+        extraction_mode = os.environ.get("EXTRACTION_MODE", "rule_based")
+
         try:
-            found = await asyncio.to_thread(intent_module.extract, turn.text, self.last_turn_text)
+            if extraction_mode == "llm":
+                from conversation import llm_extract
+
+                try:
+                    found = await asyncio.to_thread(llm_extract.extract, turn.text, self.last_turn_text)
+                except Exception as e:
+                    print(
+                        f"[extract] turn {turn.id}: llm extraction failed ({e!r}), "
+                        "falling back to rule_based for this turn",
+                        flush=True,
+                    )
+                    found = await asyncio.to_thread(intent_module.extract, turn.text, self.last_turn_text)
+            else:
+                found = await asyncio.to_thread(intent_module.extract, turn.text, self.last_turn_text)
         except Exception as e:
             # Extraction is additive; never take the session down over it.
             # Still printed (not just logger.exception) because this app has
