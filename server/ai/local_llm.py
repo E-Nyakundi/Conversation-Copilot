@@ -21,7 +21,15 @@ import logging
 import os
 import threading
 
-from ai.prompts import DEFAULT_ANSWER_LEVEL, SUGGESTION_SYSTEM_PROMPT, build_suggestion_prompt, get_max_tokens
+from ai.prompts import (
+    CODE_SYSTEM_PROMPT,
+    DEFAULT_ANSWER_LEVEL,
+    SUGGESTION_SYSTEM_PROMPT,
+    build_code_prompt,
+    build_suggestion_prompt,
+    get_code_max_tokens,
+    get_max_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +60,7 @@ class LocalLLM:
         )
 
     def suggest_answer(
-        self, question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL
+        self, question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL, answer_format: str = "prose"
     ) -> dict:
         """
         question: extracted question text to answer.
@@ -61,15 +69,27 @@ class LocalLLM:
         level: Phase 4 answer-level (quick/medium/detailed) — see
         ai/prompts.py:ANSWER_LEVELS. Falls back to DEFAULT_ANSWER_LEVEL on
         anything unrecognized.
+        answer_format (2026-08-16): "prose" (default) or "code" — mirrors
+        ai.cloud_router.get_suggestion's same parameter, so a Groq
+        failure falling back to this local path still gets a real code
+        prompt/token-budget instead of silently reverting to the
+        spoken-brevity one. See ai/answer_format.py.
         Returns {"text": str, "model": str}.
         """
-        user_prompt = build_suggestion_prompt(question, context_turns, level)
-        max_tokens = get_max_tokens(level)
+        if answer_format == "code":
+            system_prompt = CODE_SYSTEM_PROMPT
+            max_tokens = get_code_max_tokens(level)
+            user_prompt = build_code_prompt(question, context_turns, level)
+        else:
+            system_prompt = SUGGESTION_SYSTEM_PROMPT
+            max_tokens = get_max_tokens(level)
+            user_prompt = build_suggestion_prompt(question, context_turns, level)
+
         temperature = float(os.environ.get("LLM_TEMPERATURE", "0.4"))
 
         response = self.llm.create_chat_completion(
             messages=[
-                {"role": "system", "content": SUGGESTION_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             max_tokens=max_tokens,

@@ -56,6 +56,8 @@ class _TranscriptEntry {
     required this.latencyMs,
     required this.answerLevel,
     required this.extractionConfidence,
+    this.answerFormat,
+    this.secondaryAnswer,
   })  : kind = _EntryKind.suggestion,
         speaker = null,
         confidence = null;
@@ -72,6 +74,18 @@ class _TranscriptEntry {
   // plan), so this reflects how confident the question-extractor was
   // that this text was actually a question worth answering.
   final double? extractionConfidence;
+
+  // Phase 5 (2026-08-16): 'prose' (default/omitted), 'code', or
+  // 'code_and_prose' — see server/ai/answer_format.py. When 'code' or
+  // 'code_and_prose', `text` holds the code answer (backend contract:
+  // answer_text is always the code half when both were generated —
+  // see conversation/models.py:Suggestion). secondaryAnswer is only
+  // ever non-null for 'code_and_prose', holding the companion spoken
+  // answer. No real code-block rendering yet (monospace + a plain
+  // scrollable text block only) — proper syntax highlighting is
+  // deliberately deferred; see the build plan entry for this feature.
+  final String? answerFormat;
+  final String? secondaryAnswer;
 }
 
 class _LiveSessionScreenState extends State<LiveSessionScreen>
@@ -232,6 +246,8 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
             latencyMs: (data['latency_ms'] as num?)?.toInt(),
             answerLevel: data['answer_level'] as String?,
             extractionConfidence: (data['extraction_confidence'] as num?)?.toDouble(),
+            answerFormat: data['answer_format'] as String?,
+            secondaryAnswer: data['secondary_answer'] as String?,
           ));
         });
         _scrollToEnd();
@@ -590,6 +606,12 @@ class _EntriesView extends StatelessWidget {
         final confLabel = entry.extractionConfidence != null
             ? 'conf ${(entry.extractionConfidence! * 100).round()}%'
             : null;
+        final isCode = entry.answerFormat == 'code' || entry.answerFormat == 'code_and_prose';
+        final cardLabel = entry.answerFormat == 'code'
+            ? 'Suggested code'
+            : entry.answerFormat == 'code_and_prose'
+                ? 'Suggested code (+ spoken alternative below)'
+                : 'Suggested answer';
         return Container(
           margin: const EdgeInsets.only(bottom: 16),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -601,13 +623,17 @@ class _EntriesView extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Row(
+              Row(
                 children: [
-                  Icon(Icons.lightbulb_outline, size: 13, color: CopilotColors.blue),
-                  SizedBox(width: 6),
+                  Icon(
+                    isCode ? Icons.code : Icons.lightbulb_outline,
+                    size: 13,
+                    color: CopilotColors.blue,
+                  ),
+                  const SizedBox(width: 6),
                   Text(
-                    'Suggested answer',
-                    style: TextStyle(
+                    cardLabel,
+                    style: const TextStyle(
                       fontFamily: CopilotFonts.display,
                       fontWeight: FontWeight.w500,
                       fontSize: 12,
@@ -617,10 +643,38 @@ class _EntriesView extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 6),
-              Text(
+              // Code answers rendered monospace so a fenced block is at
+              // least visually distinct from prose, even without real
+              // syntax highlighting — that's deliberately deferred (see
+              // build plan); this is the honest stepping-stone version.
+              SelectableText(
                 entry.text,
-                style: const TextStyle(fontSize: 13.5, height: 1.5, color: CopilotColors.paper),
+                style: TextStyle(
+                  fontFamily: isCode ? CopilotFonts.mono : null,
+                  fontSize: isCode ? 12.5 : 13.5,
+                  height: isCode ? 1.45 : 1.5,
+                  color: CopilotColors.paper,
+                ),
               ),
+              if (entry.secondaryAnswer != null) ...[
+                const SizedBox(height: 12),
+                const Divider(height: 1, color: CopilotColors.mist),
+                const SizedBox(height: 10),
+                const Text(
+                  'ALTERNATIVE (SPOKEN)',
+                  style: TextStyle(
+                    fontFamily: CopilotFonts.mono,
+                    fontSize: 10,
+                    letterSpacing: 0.5,
+                    color: CopilotColors.mist,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  entry.secondaryAnswer!,
+                  style: const TextStyle(fontSize: 13.5, height: 1.5, color: CopilotColors.paper),
+                ),
+              ],
               const SizedBox(height: 8),
               Row(
                 children: [

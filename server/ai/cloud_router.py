@@ -33,7 +33,15 @@ import logging
 import os
 import threading
 
-from ai.prompts import DEFAULT_ANSWER_LEVEL, SUGGESTION_SYSTEM_PROMPT, build_suggestion_prompt, get_max_tokens
+from ai.prompts import (
+    CODE_SYSTEM_PROMPT,
+    DEFAULT_ANSWER_LEVEL,
+    SUGGESTION_SYSTEM_PROMPT,
+    build_code_prompt,
+    build_suggestion_prompt,
+    get_code_max_tokens,
+    get_max_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,25 +64,40 @@ def _get_groq_client():
     return _groq_client
 
 
-def _suggest_via_groq(question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL) -> dict:
+def _suggest_via_groq(
+    question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL, answer_format: str = "prose"
+) -> dict:
     """
     Raises on any Groq-side failure — get_suggestion() decides whether to
     fall back. Returns {"text": str, "model": str} on success, the same
     shape ai.local_llm.LocalLLM.suggest_answer() returns.
+
+    answer_format (2026-08-16): "prose" (default, unchanged behavior) or
+    "code" — selects CODE_SYSTEM_PROMPT/build_code_prompt and a much
+    larger token budget instead of SUGGESTION_SYSTEM_PROMPT's spoken-
+    brevity path. See ai/answer_format.py for how a question gets routed
+    to one or the other.
     """
     from groq import APIConnectionError, APIError, APITimeoutError, RateLimitError
 
     client = _get_groq_client()
     model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
-    max_tokens = get_max_tokens(level)
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.4"))
-    user_prompt = build_suggestion_prompt(question, context_turns, level)
+
+    if answer_format == "code":
+        system_prompt = CODE_SYSTEM_PROMPT
+        max_tokens = get_code_max_tokens(level)
+        user_prompt = build_code_prompt(question, context_turns, level)
+    else:
+        system_prompt = SUGGESTION_SYSTEM_PROMPT
+        max_tokens = get_max_tokens(level)
+        user_prompt = build_suggestion_prompt(question, context_turns, level)
 
     try:
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": SUGGESTION_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             max_tokens=max_tokens,
@@ -90,7 +113,9 @@ def _suggest_via_groq(question: str, context_turns: list[dict], level: str = DEF
     return {"text": choice.strip(), "model": f"groq:{model}"}
 
 
-def get_suggestion(question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL) -> dict:
+def get_suggestion(
+    question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL, answer_format: str = "prose"
+) -> dict:
     """
     Public entry point — same signature and return shape as
     ai.local_llm.LocalLLM.suggest_answer(), so audio/consumers.py can call
@@ -103,10 +128,12 @@ def get_suggestion(question: str, context_turns: list[dict], level: str = DEFAUL
     ai/prompts.py:ANSWER_LEVELS. Passed through to both the Groq and
     local paths so a level switch behaves identically regardless of
     which one actually serves the request.
+    answer_format: "prose" (default) or "code" — see ai/answer_format.py.
+    Passed through to both the Groq and local paths identically.
     """
     if os.environ.get("GROQ_API_KEY"):
         try:
-            return _suggest_via_groq(question, context_turns, level)
+            return _suggest_via_groq(question, context_turns, level, answer_format)
         except Exception:
             logger.warning(
                 "Groq suggestion failed, falling back to local model",
@@ -117,4 +144,4 @@ def get_suggestion(question: str, context_turns: list[dict], level: str = DEFAUL
 
     from ai.local_llm import get_llm
 
-    return get_llm().suggest_answer(question, context_turns, level)
+    return get_llm().suggest_answer(question, context_turns, level, answer_format)

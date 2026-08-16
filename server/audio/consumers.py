@@ -498,6 +498,16 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         until LLM_MODEL_PATH is set — see .env.example) or any inference
         failure just means no suggestion, not a crashed session.
 
+        Phase 5 (2026-08-16): answer format routing. ai.answer_format
+        classifies the question as CODE, PROSE, or CODE_AND_PROSE (see
+        that module — cheap rule-based classification, deliberately not
+        an LLM call, so this stays fast for the common case). CODE and
+        PROSE are still exactly one generation call each, just with a
+        different prompt/token-budget pair. CODE_AND_PROSE is the one
+        case that costs a second call — by design this should be a small
+        minority of questions, not the default path; see
+        ai/answer_format.py's docstring for why it's built to stay narrow.
+
         Diagnostic prints throughout (not just logger calls) are
         deliberate: this project has no LOGGING config in settings.py, so
         logger.info/debug calls have nowhere configured to go, and even
@@ -507,6 +517,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         print(..., flush=True) is the same pattern the startup warmup
         messages already use, and those are confirmed to show up.
         """
+        from ai.answer_format import CODE, CODE_AND_PROSE, PROSE, classify
         from ai.cloud_router import get_suggestion
 
         # Snapshot the level at the moment generation starts, not when it
@@ -515,9 +526,11 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         # when it kicked off, not whatever the level happens to be later.
         level = self.answer_level
 
+        answer_format = classify(extraction.text)
+
         print(
             f"[suggest] extraction {extraction.id} ({extraction.text!r}): "
-            f"starting (level={level})",
+            f"starting (level={level}, format={answer_format})",
             flush=True,
         )
 
@@ -531,7 +544,12 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         # extraction as an imperative match (see Extraction.subtype).
         # Separate env var (not a multiplier on context_limit) so each
         # can be tuned independently once real usage data exists.
-        if extraction.subtype == "imperative":
+        # Code-shaped asks get the same wider window as imperative asks
+        # for the same reason — constraints/signature/behavior are often
+        # spread across several prior turns before the ask itself lands
+        # (see Ed's real screenshots: language, then constraints, then
+        # the actual "implement X" turn).
+        if extraction.subtype == "imperative" or answer_format in (CODE, CODE_AND_PROSE):
             context_limit = int(
                 os.environ.get("SUGGESTION_CONTEXT_TURNS_IMPERATIVE", "12")
             )
@@ -539,9 +557,52 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         started = time.monotonic()
         try:
             context_turns = await self._recent_turns_context(context_limit)
-            result = await asyncio.to_thread(
-                get_suggestion, extraction.text, context_turns, level
-            )
+
+            if answer_format == CODE_AND_PROSE:
+                # Two independent generations, run concurrently rather
+                # than sequentially — this is already the expensive path
+                # by design (see docstring above); no reason to also pay
+                # for it serially. Each is wrapped in to_thread since
+                # get_suggestion is a blocking call.
+                code_result, prose_result = await asyncio.gather(
+                    asyncio.to_thread(get_suggestion, extraction.text, context_turns, level, CODE),
+                    asyncio.to_thread(get_suggestion, extraction.text, context_turns, level, PROSE),
+                    return_exceptions=True,
+                )
+                # Either half can fail independently (a Groq hiccup on
+                # one call shouldn't sink the other) — treat a raised
+                # exception as "that half produced nothing" rather than
+                # aborting the whole suggestion.
+                if isinstance(code_result, Exception):
+                    print(f"[suggest] extraction {extraction.id}: code half failed: {code_result!r}", flush=True)
+                    code_result = None
+                if isinstance(prose_result, Exception):
+                    print(f"[suggest] extraction {extraction.id}: prose half failed: {prose_result!r}", flush=True)
+                    prose_result = None
+
+                if not code_result and not prose_result:
+                    raise RuntimeError("both code_and_prose generations failed")
+
+                # If one half genuinely failed, degrade gracefully to
+                # whichever succeeded rather than sending a suggestion
+                # with an empty half — same "best-effort" posture as the
+                # rest of this method.
+                if code_result and prose_result:
+                    result = {"text": code_result["text"], "model": code_result.get("model", "")}
+                    secondary_text = prose_result["text"]
+                elif code_result:
+                    answer_format = CODE
+                    result = code_result
+                    secondary_text = None
+                else:
+                    answer_format = PROSE
+                    result = prose_result
+                    secondary_text = None
+            else:
+                result = await asyncio.to_thread(
+                    get_suggestion, extraction.text, context_turns, level, answer_format
+                )
+                secondary_text = None
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -556,7 +617,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
 
         print(
             f"[suggest] extraction {extraction.id}: got answer from "
-            f"{result.get('model')} in {latency_ms:.0f}ms",
+            f"{result.get('model')} in {latency_ms:.0f}ms (format={answer_format})",
             flush=True,
         )
 
@@ -566,6 +627,8 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             extraction=extraction,
             question_text=extraction.text,
             answer_text=result["text"],
+            answer_format=answer_format,
+            secondary_answer_text=secondary_text,
             model_used=result.get("model", ""),
             latency_ms=latency_ms,
             answer_level=level,
@@ -581,6 +644,15 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                         "extraction_id": extraction.id,
                         "question": extraction.text,
                         "answer": result["text"],
+                        "answer_format": answer_format,
+                        # Populated only for code_and_prose: the companion
+                        # prose answer alongside answer_text's code answer.
+                        # Flutter can ignore this field entirely until it's
+                        # ready to render a second variant — omitting it
+                        # for prose/code suggestions rather than sending
+                        # null keeps the payload shape closer to what
+                        # existing clients already expect.
+                        **({"secondary_answer": secondary_text} if secondary_text else {}),
                         "latency_ms": round(latency_ms),
                         "answer_level": level,
                         # Extraction confidence, not model confidence — the

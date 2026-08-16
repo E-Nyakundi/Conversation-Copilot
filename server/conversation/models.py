@@ -156,6 +156,28 @@ class Suggestion(models.Model):
     question_text = models.TextField()
     answer_text = models.TextField()
 
+    FORMAT_PROSE = "prose"
+    FORMAT_CODE = "code"
+    FORMAT_CODE_AND_PROSE = "code_and_prose"
+
+    FORMAT_CHOICES = [
+        (FORMAT_PROSE, "Prose"),
+        (FORMAT_CODE, "Code"),
+        (FORMAT_CODE_AND_PROSE, "Code and prose"),
+    ]
+
+    # Phase 5 (2026-08-16): which shape this suggestion is — see
+    # ai/answer_format.py for how a question gets classified. For
+    # FORMAT_CODE_AND_PROSE, answer_text holds the CODE answer (the
+    # more actionable of the two for a live coding-interview moment)
+    # and secondary_answer_text holds the companion prose answer — kept
+    # as one row with two text fields rather than two separate
+    # Suggestion rows sharing an extraction, so the UI has one clear
+    # place to look for "the other version of this answer" rather than
+    # having to correlate two rows itself.
+    answer_format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default=FORMAT_PROSE)
+    secondary_answer_text = models.TextField(blank=True, null=True)
+
     # Phase 4: which answer-level (see ai/prompts.py:ANSWER_LEVELS) this
     # suggestion was generated at — recorded per-row (not just used
     # transiently) so Phase 8's debrief can see which level the user

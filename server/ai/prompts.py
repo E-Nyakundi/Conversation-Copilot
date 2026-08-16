@@ -25,6 +25,27 @@ SUGGESTION_SYSTEM_PROMPT = (
     "itself: no preamble, no meta-commentary, no restating the question."
 )
 
+# Phase 5 (2026-08-16): a separate prompt for code-shaped asks (see
+# ai/answer_format.py) — SUGGESTION_SYSTEM_PROMPT above is explicitly
+# tuned for spoken brevity ("not an essay") which was actively fighting
+# real code answers: a coding-interview question routed through it came
+# back describing what code *would* do rather than writing it (confirmed
+# against Ed's real session screenshots, 2026-08-16). This prompt asks
+# for the opposite: an actual working answer in a fenced code block,
+# with only as much prose as needed to explain non-obvious choices.
+CODE_SYSTEM_PROMPT = (
+    "You are a real-time conversation copilot silently listening to a live "
+    "technical conversation (e.g. a coding interview). A coding question "
+    "has just been asked of the user. Respond with a real, working answer: "
+    "actual code in a fenced code block (```language ... ```), not a "
+    "description of code. Keep it complete enough to actually work but no "
+    "more — skip boilerplate/imports that aren't the point of the "
+    "question. Add at most 1-2 short sentences of explanation for a "
+    "genuinely non-obvious choice (e.g. why a particular data structure), "
+    "before or after the code block, not instead of the code. No "
+    "restating the question, no long preamble."
+)
+
 DEFAULT_ANSWER_LEVEL = "medium"
 
 # max_tokens is a generation budget, not a target length — the model can
@@ -77,6 +98,59 @@ def get_max_tokens(level):
     if env_val:
         return int(env_val)
     return ANSWER_LEVELS[level]["max_tokens"]
+
+
+# Phase 5 (2026-08-16): code answers need a much bigger budget than any
+# ANSWER_LEVELS entry — none of quick/medium/detailed (60/150/350) fit an
+# actual function body, let alone the surrounding fenced block and a
+# line or two of explanation. Kept as flat level->tokens map (not a
+# multiplier on ANSWER_LEVELS) so each can be tuned independently once
+# real usage shows whether these are too generous/stingy, same reasoning
+# ANSWER_LEVELS' own docstring gives for its numbers.
+CODE_MAX_TOKENS = {
+    "quick": 250,
+    "medium": 500,
+    "detailed": 900,
+}
+
+
+def get_code_max_tokens(level):
+    """Same override convention as get_max_tokens, via LLM_CODE_MAX_TOKENS_<LEVEL>."""
+    level = normalize_level(level)
+    env_val = os.environ.get(f"LLM_CODE_MAX_TOKENS_{level.upper()}")
+    if env_val:
+        return int(env_val)
+    return CODE_MAX_TOKENS[level]
+
+
+def build_code_prompt(question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL) -> str:
+    """
+    Same shape as build_suggestion_prompt but paired with
+    CODE_SYSTEM_PROMPT — level here loosely controls code
+    thoroughness/explanation depth rather than sentence count, since
+    "one short sentence" (quick's ANSWER_LEVELS instruction) doesn't
+    mean anything for a code answer.
+    """
+    level = normalize_level(level)
+    if context_turns:
+        context_lines = "\n".join(f"{t['speaker']}: {t['text']}" for t in context_turns)
+        context_block = f"Recent conversation:\n{context_lines}\n\n"
+    else:
+        context_block = ""
+
+    depth_instruction = {
+        "quick": "Keep it minimal — the core working solution only, no extra explanation.",
+        "medium": "A working solution plus a brief note on any non-obvious choice.",
+        "detailed": (
+            "A working solution, briefly covering the main trade-off or "
+            "edge case if there is one worth mentioning."
+        ),
+    }[level]
+
+    return (
+        f"{context_block}Coding question just asked: {question}\n\n"
+        f"{depth_instruction}\n\nSuggested answer:"
+    )
 
 
 def build_suggestion_prompt(question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL) -> str:
