@@ -48,5 +48,27 @@
     "B: I'd try to understand their reasoning first before pushing back with data.",
     "C: Code review is due Friday, don't forget.",
     "C: Refactor branch is already merged, by the way."
+  ],
+  "interview_build_verbs_round2": [
+    "A: First, design a distributed task queue with retries and monitoring.",
+    "B: I'd use a broker like SQS or RabbitMQ, with a dead-letter queue for failed jobs.",
+    "A: Next, debug the deadlock in a multi-threaded bank transfer.",
+    "B: I'd check lock ordering first, since that's the classic cause.",
+    "A: Optimize a slow reporting query in Postgres and explain your indexes.",
+    "B: I'd start with EXPLAIN ANALYZE to see where the time is actually going.",
+    "A: Redesign a monolith into microservices without downtime.",
+    "B: I'd use the strangler fig pattern, routing traffic gradually to new services.",
+    "A: propose a caching strategy that balances cost and staleness.",
+    "B: I'd go with a TTL-based cache with stale-while-revalidate.",
+    "A: create a rate limiter that works across regions.",
+    "B: I'd use a token bucket backed by a globally replicated store like DynamoDB.",
+    "A: audit security in a multi-tenant application.",
+    "B: I'd start by checking row-level tenant isolation and access control.",
+    "A: benchmark and profile a slow endpoint.",
+    "B: I'd profile with a flamegraph first before guessing at the bottleneck.",
+    "C: Scale is important for a senior candidate.",
+    "C: Debug mode is enabled for this build.",
+    "C: Redesign efforts are underway.",
+    "C: Next, let's talk about culture fit."
   ]
 }

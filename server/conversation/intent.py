@@ -68,6 +68,22 @@ _WH_WORDS = r"(who|what|when|where|why|how|which|whose)"
 _AUX_START = r"(is|are|was|were|do|does|did|can|could|will|would|should|shall|has|have|had|am)"
 _SUBJECT = r"(i|you|we|they|he|she|it|this|that|there)"
 
+# Small closed set of sequencing/transition words that routinely open an
+# otherwise-recognized imperative sentence in real multi-part interview
+# prompts ("First, design a distributed task queue...", "Next, implement
+# an LRU cache..."). Only fires when immediately followed by a comma, so
+# it can't widen the imperative gate beyond "known transition word +
+# comma + known verb" — see the 2026-08-16 note on the imperative
+# pattern below for the real-session evidence this was added for.
+_SEQUENCE_PREFIX = r"(?:(?:first|second|third|next|then|finally|also|now)\s*,\s*)?"
+
+# A small determiner set used to gate a handful of imperative verbs that
+# are ambiguous as bare sentence-openers (see the 2026-08-16 note below)
+# — requiring one of these immediately after the verb is what lets
+# "Scale a WebSocket chat service..." match while "Scale is important
+# for a senior candidate..." doesn't.
+_DET = r"(?:a|an|the|your|this|these|those)"
+
 QUESTION_PATTERNS = [
     (re.compile(r"\?\s*$"), 0.9, None),
     # Leading wh-word without a question mark (e.g. transcription dropped
@@ -119,24 +135,68 @@ QUESTION_PATTERNS = [
     # "Build..." sentence did not — same intent, different verb,
     # different (broken) outcome.
     #
-    # Deliberately did NOT also add create/develop/discuss/refactor/code
-    # here to match ai/answer_format.py's wider _BUILD_VERBS list, even
-    # though that was the obvious first instinct — tested each one as a
-    # bare sentence-opener first and every one of them has a common,
-    # non-imperative reading that "build" doesn't: "Code review is due
-    # Friday.", "Create a ticket for that when you get a chance.",
-    # "Develop mode is enabled on staging.", "Refactor branch is already
-    # merged." would all wrongly become question extractions. "build" is
-    # the verb actually evidenced as broken in the real session logs and
-    # is rare as a bare sentence-opener outside an imperative ask; the
-    # others are speculative additions with a demonstrated false-positive
-    # cost and no evidence of the same failure. If one of them turns up
-    # missed in a real session the same way "build" did, add it then,
-    # with the same kind of evidence — not preemptively as a set.
+    # At the time, deliberately did NOT also add create/develop/discuss/
+    # refactor/code to match ai/answer_format.py's wider _BUILD_VERBS
+    # list — each one tested as a bare sentence-opener had a common,
+    # non-imperative reading that "build" didn't, and there was no log
+    # evidence any of them were actually broken the way "build" was. The
+    # plan was: add one only once it turns up missed in a real session,
+    # with the same kind of evidence.
+    #
+    # That evidence showed up the same day. Ed ran a second session
+    # (2026-08-16, later) deliberately covering "every verb an
+    # interviewer might use, not only the build one" — real prompts like
+    # "Optimize a slow reporting query...", "Debug a deadlock...",
+    # "Redesign a monolith...", "refactor a legacy code base...",
+    # "propose a caching strategy...", "Migrate a monolithic
+    # database...", "create a rate limiter...", "audit security...",
+    # "extend an API...", "benchmark and profile a slow endpoint." all
+    # logged `found 0 item(s)` the same way "build" originally did.
+    # Two genuinely different problems surfaced in that log, fixed
+    # together here:
+    #
+    # 1. Sequencing words defeat the anchor. "First, design a
+    #    distributed task queue..." and "Next, implement an LRU
+    #    cache..." didn't match even though "design"/"implement" were
+    #    ALREADY in this list — the pattern is anchored to the very
+    #    start of the sentence, and "First,"/"Next," sat in front of the
+    #    verb. Fixed via _SEQUENCE_PREFIX: a small closed set of
+    #    transition words, only consumed when immediately followed by a
+    #    comma, so it can't widen the gate beyond "known transition word
+    #    + known verb" — tested against "First, thanks for coming in
+    #    today.", "Next, let's talk about culture fit.", "Then, we'll
+    #    discuss compensation." to confirm none of those false-positive.
+    #
+    # 2. More real missing verbs. optimize/propose/migrate/extend added
+    #    bare — tested as sentence-openers and found no plausible
+    #    non-imperative reading ("Optimization is still pending
+    #    review.", "Migration is scheduled for tonight.", "Proposal is
+    #    due Monday.", "Extended warranty options are available." all
+    #    correctly stay unmatched, since none of them are the bare verb
+    #    form itself). scale/debug/redesign/refactor are each real,
+    #    evidenced asks too, but ARE ambiguous bare ("Scale is important
+    #    for a senior candidate.", "Debug mode is enabled for this
+    #    build.", "Redesign efforts are underway.", "Refactor branch is
+    #    already merged." are all plausible non-imperative sentences) —
+    #    every one of their real evidenced cases ("scale A WebSocket...",
+    #    "Debug A deadlock...", "Redesign A monolith...", "refactor A
+    #    legacy code base...") happens to have an article right after
+    #    the verb, so _DET gates just these four rather than leaving
+    #    them broken or accepting their false-positive cost unnecessarily.
+    #    create/audit/benchmark are added bare (accepting the same kind
+    #    of risk "build" already carries) because their real evidenced
+    #    cases ("create A rate limiter...", but also "audit security..."
+    #    and "benchmark and profile...") do NOT reliably have an article
+    #    right after the verb, so gating them would silently break the
+    #    exact case being fixed — same trade Ed already accepted for
+    #    "build" vs. "Build number 42 failed CI.".
     (re.compile(
-        r"^\s*(tell me|describe|explain|walk( me)? through|talk( me)? through|"
-        r"give me an example|give an example|write (a|an|some)|"
-        r"implement|design|build|list|name|outline|summarize|compare|define)\b",
+        rf"^\s*{_SEQUENCE_PREFIX}(tell me|describe|explain|walk( me)? through|"
+        rf"talk( me)? through|give me an example|give an example|"
+        rf"write (a|an|some)|implement|design|build|"
+        rf"scale {_DET}|debug {_DET}|redesign {_DET}|refactor {_DET}|"
+        rf"optimize|propose|migrate|extend|create|audit|benchmark|"
+        rf"list|name|outline|summarize|compare|define)\b",
         re.IGNORECASE,
     ), 0.65, "imperative"),
 ]
