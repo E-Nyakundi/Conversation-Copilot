@@ -43,34 +43,63 @@ ALL_FORMATS = (CODE, PROSE, CODE_AND_PROSE)
 # something — strong signal on their own even with zero other markers,
 # since these verbs are rarely used for a spoken/conceptual answer.
 _BUILD_VERBS = re.compile(
-    r"\b(write|implement|build|design|code|refactor)\b",
+    r"\b(write|implement|build|design|code|refactor|create|develop)\b",
     re.IGNORECASE,
 )
 
-# Programming languages / frameworks named explicitly — near-certain
-# code ask regardless of anything else in the sentence.
+# Command-style algorithm verbs ("reverse a linked list", "detect a
+# cycle", "check if X is a palindrome") — deliberately NOT folded into
+# _BUILD_VERBS above: these words are common in ordinary prose too
+# ("check if the client agreed", "find out what happened"), so on
+# their own they're too weak a signal and stay OUT of the bare-verb
+# CODE_AND_PROSE fallback. They only count when paired with an actual
+# DS/algo term already anchoring the sentence to something technical —
+# see the CODE rule below.
+_ALGO_COMMAND_VERBS = re.compile(
+    r"\b(reverse|detect|check|determine|calculate|compute|merge|sort|"
+    r"search|traverse|invert|validate|parse|count|reduce|flatten|"
+    r"rotate|sum|find)\b",
+    re.IGNORECASE,
+)
+
+# Programming languages / frameworks / infra named explicitly — near-
+# certain code ask regardless of anything else in the sentence.
 _LANGUAGE_SIGNALS = re.compile(
     r"\b(python|javascript|typescript|java\b|c\+\+|c#|golang|go\b|rust|"
-    r"sql|websockets?|django|flask|react|node(?:\.js)?|api\b)\b",
+    r"kotlin|swift|php|ruby|scala|bash|shell script|"
+    r"sql|websockets?|django|flask|react|node(?:\.js)?|api\b|"
+    r"docker|kubernetes|k8s|redis|mongodb|postgres(?:ql)?|mysql|"
+    r"kafka|rabbitmq|grpc|graphql|aws|s3|lambda function)\b",
     re.IGNORECASE,
 )
 
 # Data structures / algorithms / CS-specific terms — strong code signal
 # even without a named language (e.g. "implement an LRU cache").
 _DS_ALGO_SIGNALS = re.compile(
-    r"\b(lru cache|hash ?map|linked list|binary (search |)tree|"
-    r"time complexity|space complexity|O\(1\)|O\(n\)|O\(log ?n\)|"
-    r"rate limiter|cache invalidation|race conditions?|"
+    r"\b(lru cache|hash ?maps?|hash ?tables?|linked lists?|"
+    r"binary (search |)trees?|binary search\b|"
+    r"stacks?\b|queues?\b|priority queue|heaps?\b|tries?\b|graphs?\b|"
+    r"dfs\b|bfs\b|depth[- ]first|breadth[- ]first|"
+    r"dynamic programming|memoi[sz]ation|greedy algorithm|"
+    r"sliding window|two[- ]pointer|binary search|sort(?:ing)? algorithm|"
+    r"time complexity|space complexity|big[- ]o\b|O\(1\)|O\(n\)|O\(log ?n\)|"
+    r"rate limiter|cache invalidation|race conditions?|deadlocks?|"
+    r"mutex(?:es)?|semaphores?|distributed lock|consistent hashing|"
+    r"sharding|idempoten\w+|pub[- /]sub|message queue|event loop|"
+    r"design pattern|singleton pattern|"
     r"concurren\w+|thread[- ]safe|data structures?|algorithms?|"
-    r"function that|class that|endpoint that)\b",
+    r"recursion|recursive(?:ly)?|palindrome|anagram|merge intervals?|"
+    r"function that|class that|endpoint that|given an array|given a string)\b",
     re.IGNORECASE,
 )
 
 # An explicit ask for code itself ("a couple code snippets", "show me
-# the code") — this wins outright regardless of build-verb wording,
-# since there's no ambiguity left once code is asked for by name.
+# the code", "write pseudocode") — this wins outright regardless of
+# build-verb wording, since there's no ambiguity left once code is
+# asked for by name.
 _EXPLICIT_CODE_REQUEST = re.compile(
-    r"\bcode snippets?\b|\bshow (me )?(the |some )?code\b|\bwrite (some |the )?code\b",
+    r"\bcode snippets?\b|\bshow (me )?(the |some |your )?(code|implementation)\b|"
+    r"\bwrite (some |the )?(code|pseudocode)\b|\bpseudocode\b",
     re.IGNORECASE,
 )
 
@@ -93,20 +122,18 @@ def classify(question_text: str) -> str:
     Deliberately conservative in both directions: a clear code signal
     (language name, build verb + CS term) wins even alongside a mild
     prose signal, since "how would you implement X" is still a code ask
-    despite starting like a prose one. Genuinely mixed or signal-free
-    text falls to CODE_AND_PROSE rather than being forced — this is the
-    "narrow ambiguous band" the dual-generation path exists for, and it
-    should stay narrow. A question with zero technical signal at all
-    (e.g. "what's your availability next week?") is NOT ambiguous, it's
-    just plain PROSE — CODE_AND_PROSE is only for cases with real,
-    conflicting or absent-but-technical-context signal, not every
-    non-technical question, so this function checks for at least some
-    technical anchoring before ever returning CODE_AND_PROSE.
+    despite starting like a prose one. Genuinely mixed, signal-free-but-
+    build-verbed, or DS/algo-flavored-but-verbless text falls to
+    CODE_AND_PROSE rather than being forced either direction — this is
+    the "narrow ambiguous band" the dual-generation path exists for. A
+    question with zero technical signal at all (e.g. "what's your
+    availability next week?") is NOT ambiguous, it's just plain PROSE.
     """
     text = question_text or ""
 
     has_explicit_code_request = bool(_EXPLICIT_CODE_REQUEST.search(text))
     has_build_verb = bool(_BUILD_VERBS.search(text))
+    has_algo_command_verb = bool(_ALGO_COMMAND_VERBS.search(text))
     has_language = bool(_LANGUAGE_SIGNALS.search(text))
     has_ds_algo = bool(_DS_ALGO_SIGNALS.search(text))
     has_prose_signal = bool(_PROSE_SIGNALS.search(text))
@@ -119,8 +146,13 @@ def classify(question_text: str) -> str:
 
     # Strong, unambiguous code ask: an explicit build verb combined with
     # either a named language or a CS-specific term ("write a function",
-    # "implement an LRU cache", "build a rate limiter in Python").
-    if has_build_verb and (has_language or has_ds_algo):
+    # "implement an LRU cache", "build a rate limiter in Python"). Also
+    # covers terse leetcode-style commands ("reverse a linked list",
+    # "detect a cycle in a graph", "check if a string is a palindrome")
+    # via _ALGO_COMMAND_VERBS — those verbs are too generic to count on
+    # their own (see that regex's docstring), but paired with a real
+    # DS/algo term they're just as unambiguous as an explicit "implement".
+    if (has_build_verb or has_algo_command_verb) and (has_language or has_ds_algo):
         return CODE
 
     # A named language/library alone, with no prose framing fighting it,
@@ -135,12 +167,23 @@ def classify(question_text: str) -> str:
     if has_prose_signal:
         return PROSE
 
-    # A CS-specific term with no build verb and no prose framing is the
+    # A CS-specific term with no build verb and no prose framing is a
     # real ambiguous case ("how do you think about cache invalidation?"
-    # could reasonably be either) — this is deliberately the ONLY path
-    # that reaches CODE_AND_PROSE, so it stays a narrow band, not a
-    # catch-all for every non-obvious question.
+    # could reasonably be either).
     if has_ds_algo:
+        return CODE_AND_PROSE
+
+    # Bug fix (2026-08-16, from Ed's real session): a build verb with NO
+    # recognized language or CS term (e.g. "Implement a collaborative
+    # document editor with... OT or CRDTs" — "OT"/"CRDTs" aren't in the
+    # DS/algo list, and no language is named) was falling all the way
+    # through to plain PROSE, which is wrong — this is clearly a build-
+    # something ask. Route to CODE_AND_PROSE rather than straight CODE:
+    # unlike the narrower DS/algo-term case, a bare build verb with no
+    # other technical anchor is more likely to be a broader system-
+    # design question that genuinely benefits from both a code sketch
+    # and a spoken explanation, not just code alone.
+    if has_build_verb:
         return CODE_AND_PROSE
 
     # No technical signal at all — ordinary conversational question.
