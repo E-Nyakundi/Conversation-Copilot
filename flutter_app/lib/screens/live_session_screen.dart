@@ -49,7 +49,9 @@ class _TranscriptEntry {
   })  : kind = _EntryKind.finalTurn,
         latencyMs = null,
         answerLevel = null,
-        extractionConfidence = null;
+        extractionConfidence = null,
+        answerFormat = null,
+        secondaryAnswer = null;
 
   _TranscriptEntry.suggestion({
     required this.text,
