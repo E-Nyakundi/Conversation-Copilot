@@ -106,10 +106,37 @@ QUESTION_PATTERNS = [
     # and the "me"-required version was silently missing every one of
     # those in testing. Confirmed via screenshots: this exact sentence
     # produced zero extraction matches under the old pattern.
+    #
+    # "build" added 2026-08-16 — a real, live-session bug, not a
+    # hypothetical gap. Every "Build a distributed job queue...",
+    # "Build a rate limiter...", "Build a simplified Redis clone..."
+    # sentence in Ed's 2026-08-16 interview-practice session logged
+    # `found 0 item(s) []` — this pattern is the gate that decides
+    # whether a sentence is even considered a question at all, and
+    # "build" (probably the single most common interview-prompt verb)
+    # was never in it. Confirmed via `make prod-logs`: every
+    # "Implement..." sentence in the same session matched fine; every
+    # "Build..." sentence did not — same intent, different verb,
+    # different (broken) outcome.
+    #
+    # Deliberately did NOT also add create/develop/discuss/refactor/code
+    # here to match ai/answer_format.py's wider _BUILD_VERBS list, even
+    # though that was the obvious first instinct — tested each one as a
+    # bare sentence-opener first and every one of them has a common,
+    # non-imperative reading that "build" doesn't: "Code review is due
+    # Friday.", "Create a ticket for that when you get a chance.",
+    # "Develop mode is enabled on staging.", "Refactor branch is already
+    # merged." would all wrongly become question extractions. "build" is
+    # the verb actually evidenced as broken in the real session logs and
+    # is rare as a bare sentence-opener outside an imperative ask; the
+    # others are speculative additions with a demonstrated false-positive
+    # cost and no evidence of the same failure. If one of them turns up
+    # missed in a real session the same way "build" did, add it then,
+    # with the same kind of evidence — not preemptively as a set.
     (re.compile(
         r"^\s*(tell me|describe|explain|walk( me)? through|talk( me)? through|"
         r"give me an example|give an example|write (a|an|some)|"
-        r"implement|design|list|name|outline|summarize|compare|define)\b",
+        r"implement|design|build|list|name|outline|summarize|compare|define)\b",
         re.IGNORECASE,
     ), 0.65, "imperative"),
 ]

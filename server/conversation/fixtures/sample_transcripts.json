@@ -38,5 +38,15 @@
     "B: We ended up deciding to go with an async approach instead.",
     "A: Great, let's move on to a different topic. How do you handle tight deadlines?",
     "B: I try to scope ruthlessly and communicate early if something's at risk."
+  ],
+  "interview_build_verbs": [
+    "A: Build a rate limiter that enforces 100 requests per user per minute in a distributed setup.",
+    "B: Sure, I'd start with a token bucket per user, backed by Redis for shared state across nodes.",
+    "A: Build a simplified Redis clone with basic persistence.",
+    "B: I'd implement an in-memory hash map with periodic snapshotting to disk.",
+    "A: Discuss how you'd handle a code review disagreement with a teammate.",
+    "B: I'd try to understand their reasoning first before pushing back with data.",
+    "C: Code review is due Friday, don't forget.",
+    "C: Refactor branch is already merged, by the way."
   ]
 }
