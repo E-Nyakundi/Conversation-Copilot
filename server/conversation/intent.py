@@ -190,10 +190,31 @@ QUESTION_PATTERNS = [
     #    right after the verb, so gating them would silently break the
     #    exact case being fixed — same trade Ed already accepted for
     #    "build" vs. "Build number 42 failed CI.".
+    #
+    # 2026-08-16, later same day (§9/§10/§11 recon pass) — "discuss" and
+    # "cover" added, evidence from a fresh `make prod-logs` capture of a
+    # real interview-practice session: "Discuss the algorithm choice,
+    # trade-offs, and implement the core components." and "Cover APIs,
+    # data modeling, tenant-specific delivery policies..." both logged
+    # only a weak topic_change match (0.4-0.45), never `question` —
+    # meaning no suggestion was generated for either half of two
+    # different real system-design prompts (rate limiter, notification
+    # system), each seen twice across the session.
+    #   - "discuss" added bare: tested as a sentence-opener, no plausible
+    #     non-imperative reading found ("Discussion is scheduled for
+    #     Friday." doesn't start with the bare verb "Discuss" itself).
+    #   - "cover" added bare, accepting the same risk already accepted
+    #     for build/create/audit/benchmark: the real evidenced case
+    #     ("Cover APIs, data modeling,...") has no article right after
+    #     the verb, so it can't be _DET-gated the way scale/debug/
+    #     redesign/refactor were without silently breaking the exact
+    #     case being fixed. "Cover charge applies after 9pm." is the
+    #     accepted false-positive cost, same trade as "Build number 42
+    #     failed CI." in §8.
     (re.compile(
         rf"^\s*{_SEQUENCE_PREFIX}(tell me|describe|explain|walk( me)? through|"
         rf"talk( me)? through|give me an example|give an example|"
-        rf"write (a|an|some)|implement|design|build|"
+        rf"write (a|an|some)|implement|design|build|discuss|cover|"
         rf"scale {_DET}|debug {_DET}|redesign {_DET}|refactor {_DET}|"
         rf"optimize|propose|migrate|extend|create|audit|benchmark|"
         rf"list|name|outline|summarize|compare|define)\b",

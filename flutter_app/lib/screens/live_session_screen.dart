@@ -1,9 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../audio/capture.dart';
 import '../theme.dart';
+import '../widgets/paced_code_reveal.dart';
+import '../widgets/paced_text_overlay.dart';
 import '../ws/socket.dart';
 
 /// Phase 1: the Flutter equivalent of server/audio_test.html — mic capture
@@ -107,6 +110,18 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
   final List<String> _fullTranscriptLines = [];
   final _fullTranscriptScrollController = ScrollController();
 
+  // Phase 4 (2026-08-16, build plan §11b): smart paced code-reveal
+  // orchestration. Every code-format suggestion gets its own controller
+  // (created lazily via _controllerFor) so its card always renders
+  // through PacedCodeReveal; `_activeCodeEntry` tracks whichever one is
+  // the current "being copied right now" card for queueing/overlay
+  // decisions — the most recently shown code card that hasn't finished
+  // or been manually paused yet.
+  final Map<_TranscriptEntry, PacedCodeRevealController> _codeControllers = {};
+  _TranscriptEntry? _activeCodeEntry;
+  final List<_TranscriptEntry> _pendingCodeSuggestions = [];
+  String? _overlayText;
+
   StreamSubscription? _msgSub;
   StreamSubscription? _errSub;
   StreamSubscription? _doneSub;
@@ -136,6 +151,83 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
     if (_connected) {
       _socket.send({'type': 'set_answer_level', 'level': level.wireValue});
     }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Phase 4 (2026-08-16, build plan §11b): keep the screen awake for the
+    // WHOLE live session, not scoped to only while a code card is
+    // actively being paced — decided explicitly during design (one state
+    // to manage, simpler than tracking "engaged" moments). Neither
+    // Android (WAKE_LOCK) nor iOS (isIdleTimerDisabled) needs a runtime
+    // permission prompt for this. Known limitation, not handled specially
+    // here: the OS releases this automatically the moment the app
+    // backgrounds (incoming call, app switch) — this is a "stay awake
+    // while in the foreground" feature, not a background-survival one.
+    WakelockPlus.enable();
+  }
+
+  PacedCodeRevealController _controllerFor(_TranscriptEntry entry) {
+    return _codeControllers.putIfAbsent(entry, () => PacedCodeRevealController());
+  }
+
+  bool get _activeCodeStillPacing {
+    final entry = _activeCodeEntry;
+    if (entry == null) return false;
+    final controller = _codeControllers[entry];
+    return controller != null && !controller.isFinished && !controller.manuallyOverridden;
+  }
+
+  /// Phase 4 §11b orchestration for a freshly-arrived suggestion:
+  /// - a CODE suggestion arriving while another is still being actively
+  ///   copied is held silently in `_pendingCodeSuggestions` (quiet "N
+  ///   new" indicator instead of interrupting);
+  /// - a TEXT suggestion arriving in that same situation is shown
+  ///   immediately as a semi-transparent overlay on top of the active
+  ///   code card, and that card's timer is paused for a duration matched
+  ///   to the overlay's own estimated read time (see ReadPacing);
+  /// - otherwise (nothing currently active), it's just appended and, if
+  ///   it's a code suggestion, becomes the new active card.
+  void _addSuggestionEntry(_TranscriptEntry entry) {
+    final isCodeEntry = entry.answerFormat == 'code' || entry.answerFormat == 'code_and_prose';
+
+    if (isCodeEntry && _activeCodeStillPacing) {
+      _pendingCodeSuggestions.add(entry);
+      return;
+    }
+
+    if (!isCodeEntry && _activeCodeStillPacing) {
+      _entries.add(entry);
+      _overlayText = entry.text;
+      _controllerFor(_activeCodeEntry!).pauseForOverlay(ReadPacing.forText(entry.text));
+      return;
+    }
+
+    _entries.add(entry);
+    if (isCodeEntry) {
+      _controllerFor(entry);
+      _activeCodeEntry = entry;
+    }
+  }
+
+  void _dismissOverlay() {
+    setState(() => _overlayText = null);
+  }
+
+  /// The one deliberate touch exception on the "pending" side, same as
+  /// the paced-reveal widget's own "tap to resume" affordance — a single
+  /// tap on the "N new suggestion(s)" chip, not continuous interaction.
+  void _flushPendingCodeSuggestions() {
+    setState(() {
+      for (final entry in _pendingCodeSuggestions) {
+        _entries.add(entry);
+        _controllerFor(entry);
+        _activeCodeEntry = entry;
+      }
+      _pendingCodeSuggestions.clear();
+    });
+    _scrollToEnd();
   }
 
   void _scrollToEnd() {
@@ -242,8 +334,13 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
         // message for the turn that triggered it (local LLM / Groq call
         // runs as a background task server-side) — just append whenever
         // it shows up, same as audio_test.html.
+        //
+        // Phase 4 (2026-08-16, §11b): routed through _addSuggestionEntry
+        // rather than appended directly — see that method for the
+        // queue-vs-overlay decision when a code card is already actively
+        // being copied.
         setState(() {
-          _entries.add(_TranscriptEntry.suggestion(
+          _addSuggestionEntry(_TranscriptEntry.suggestion(
             text: data['answer'] as String? ?? '',
             latencyMs: (data['latency_ms'] as num?)?.toInt(),
             answerLevel: data['answer_level'] as String?,
@@ -362,6 +459,10 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
 
   @override
   void dispose() {
+    WakelockPlus.disable();
+    for (final controller in _codeControllers.values) {
+      controller.dispose();
+    }
     _msgSub?.cancel();
     _errSub?.cancel();
     _doneSub?.cancel();
@@ -416,6 +517,12 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
                           _EntriesView(
                             entries: _entries,
                             controller: _scrollController,
+                            controllerFor: _controllerFor,
+                            activeCodeEntry: _activeCodeEntry,
+                            overlayText: _overlayText,
+                            onDismissOverlay: _dismissOverlay,
+                            pendingCount: _pendingCodeSuggestions.length,
+                            onFlushPending: _flushPendingCodeSuggestions,
                           ),
                         ],
                       ),
@@ -550,10 +657,30 @@ class _FullTranscriptView extends StatelessWidget {
 }
 
 class _EntriesView extends StatelessWidget {
-  const _EntriesView({required this.entries, required this.controller});
+  const _EntriesView({
+    required this.entries,
+    required this.controller,
+    required this.controllerFor,
+    required this.activeCodeEntry,
+    required this.overlayText,
+    required this.onDismissOverlay,
+    required this.pendingCount,
+    required this.onFlushPending,
+  });
 
   final List<_TranscriptEntry> entries;
   final ScrollController controller;
+  // Phase 4 §11b: this widget is stateless and owns none of the paced-
+  // reveal state itself — all of it lives in _LiveSessionScreenState (so
+  // it persists correctly across rebuilds and can be reasoned about
+  // alongside the WebSocket/session lifecycle) and is threaded through
+  // here as plain callbacks/values.
+  final PacedCodeRevealController Function(_TranscriptEntry) controllerFor;
+  final _TranscriptEntry? activeCodeEntry;
+  final String? overlayText;
+  final VoidCallback onDismissOverlay;
+  final int pendingCount;
+  final VoidCallback onFlushPending;
 
   @override
   Widget build(BuildContext context) {
@@ -561,7 +688,10 @@ class _EntriesView extends StatelessWidget {
       return const _EmptyPane(
           text: 'Questions and suggested answers\nwill appear here as they\'re detected.');
     }
-    return ListView.builder(
+    return Column(
+      children: [
+        Expanded(
+          child: ListView.builder(
       controller: controller,
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
       itemCount: entries.length,
@@ -614,7 +744,9 @@ class _EntriesView extends StatelessWidget {
             : entry.answerFormat == 'code_and_prose'
                 ? 'Suggested code (+ spoken alternative below)'
                 : 'Suggested answer';
-        return Container(
+        return Stack(
+          children: [
+            Container(
           margin: const EdgeInsets.only(bottom: 16),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           decoration: const BoxDecoration(
@@ -645,19 +777,25 @@ class _EntriesView extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 6),
-              // Code answers rendered monospace so a fenced block is at
-              // least visually distinct from prose, even without real
-              // syntax highlighting — that's deliberately deferred (see
-              // build plan); this is the honest stepping-stone version.
-              SelectableText(
-                entry.text,
-                style: TextStyle(
-                  fontFamily: isCode ? CopilotFonts.mono : null,
-                  fontSize: isCode ? 12.5 : 13.5,
-                  height: isCode ? 1.45 : 1.5,
-                  color: CopilotColors.paper,
+              // Code answers rendered through the Phase 4 paced reveal
+              // (build plan §11b) — stepped, one line at a time, paced by
+              // that line's own complexity, so the user can hand-copy it
+              // to another device without needing to touch this screen.
+              // Prose answers stay as plain SelectableText, unchanged.
+              if (isCode)
+                PacedCodeReveal(
+                  code: entry.text,
+                  controller: controllerFor(entry),
+                )
+              else
+                SelectableText(
+                  entry.text,
+                  style: const TextStyle(
+                    fontSize: 13.5,
+                    height: 1.5,
+                    color: CopilotColors.paper,
+                  ),
                 ),
-              ),
               if (entry.secondaryAnswer != null) ...[
                 const SizedBox(height: 12),
                 const Divider(height: 1, color: CopilotColors.mist),
@@ -706,8 +844,55 @@ class _EntriesView extends StatelessWidget {
               ),
             ],
           ),
+            ),
+            // Phase 4 §11b: the interrupting text-suggestion overlay only
+            // ever targets whichever code card is currently "active" —
+            // rendered here, inside that specific card's Stack, so it
+            // visually sits directly on top of the card being copied
+            // rather than anywhere else on screen.
+            if (isCode && entry == activeCodeEntry && overlayText != null)
+              PacedTextOverlay(
+                text: overlayText!,
+                onDismiss: onDismissOverlay,
+              ),
+          ],
         );
       },
+          ),
+        ),
+        if (pendingCount > 0)
+          GestureDetector(
+            onTap: onFlushPending,
+            child: Container(
+              width: double.infinity,
+              margin: const EdgeInsets.fromLTRB(20, 0, 20, 14),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: CopilotColors.panel,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: CopilotColors.blue, width: 1),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.notifications_active_outlined,
+                      size: 14, color: CopilotColors.blue),
+                  const SizedBox(width: 8),
+                  Text(
+                    pendingCount == 1
+                        ? '1 new suggestion ready — tap to show'
+                        : '$pendingCount new suggestions ready — tap to show',
+                    style: const TextStyle(
+                      fontFamily: CopilotFonts.display,
+                      fontSize: 12,
+                      color: CopilotColors.blue,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

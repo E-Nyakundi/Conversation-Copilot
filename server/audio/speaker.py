@@ -49,10 +49,13 @@ the naive pause labeler for that turn rather than dropping the speaker
 label entirely."
 """
 
+import logging
 import os
 import threading
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 _diarizer = None
 _diarizer_lock = threading.Lock()
@@ -216,21 +219,73 @@ class PyannoteSpeakerLabeler:
         return max(durations, key=durations.get)
 
 
+# 2026-08-16 fix (build plan §11a): both get_diarizer() and get_embedder()
+# used to be plain lazy singletons that only cached *success* — if
+# PyannoteEmbedder()/PyannoteSpeakerLabeler() raised (e.g. pyannote isn't
+# installed at all, the observed real case: `ModuleNotFoundError: No
+# module named 'pyannote'`), `_embedder`/`_diarizer` stayed None forever,
+# so every single call re-attempted the deferred import and full
+# construction from scratch, then re-raised, then got logged again by
+# consumers.py's per-turn except block — real prod evidence: identical
+# `[diarize] mode=embedding failed...` on every turn of an entire
+# session, not once. Fixed by also caching the *failure*: once
+# construction has failed once, every subsequent call raises the same
+# cached exception immediately (no repeated import/model-load attempt)
+# and this module logs it exactly once via `logger.warning`, not once
+# per call — consumers.py's own per-turn fallback logic is unchanged
+# (still falls back to naive for that turn), it just stops re-attempting
+# and re-logging a failure that was never going to recover mid-session.
+_diarizer_init_error: Exception | None = None
+_embedder_init_error: Exception | None = None
+
+
 def get_diarizer() -> "PyannoteSpeakerLabeler":
-    global _diarizer
-    if _diarizer is None:
-        with _diarizer_lock:
-            if _diarizer is None:
-                _diarizer = PyannoteSpeakerLabeler()
+    global _diarizer, _diarizer_init_error
+    if _diarizer is not None:
+        return _diarizer
+    if _diarizer_init_error is not None:
+        raise _diarizer_init_error
+    with _diarizer_lock:
+        if _diarizer is not None:
+            return _diarizer
+        if _diarizer_init_error is not None:
+            raise _diarizer_init_error
+        try:
+            _diarizer = PyannoteSpeakerLabeler()
+        except Exception as exc:
+            _diarizer_init_error = exc
+            logger.warning(
+                "PyannoteSpeakerLabeler unavailable (%r) — pyannote_full diarization "
+                "will fall back to naive speaker labeling for the rest of this "
+                "process. Logged once here, not per-turn.",
+                exc,
+            )
+            raise
     return _diarizer
 
 
 def get_embedder() -> "PyannoteEmbedder":
-    global _embedder
-    if _embedder is None:
-        with _embedder_lock:
-            if _embedder is None:
-                _embedder = PyannoteEmbedder()
+    global _embedder, _embedder_init_error
+    if _embedder is not None:
+        return _embedder
+    if _embedder_init_error is not None:
+        raise _embedder_init_error
+    with _embedder_lock:
+        if _embedder is not None:
+            return _embedder
+        if _embedder_init_error is not None:
+            raise _embedder_init_error
+        try:
+            _embedder = PyannoteEmbedder()
+        except Exception as exc:
+            _embedder_init_error = exc
+            logger.warning(
+                "PyannoteEmbedder unavailable (%r) — embedding diarization will fall "
+                "back to naive speaker labeling for the rest of this process. Logged "
+                "once here, not per-turn.",
+                exc,
+            )
+            raise
     return _embedder
 
 

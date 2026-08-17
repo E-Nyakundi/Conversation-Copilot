@@ -127,6 +127,16 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         # registry per connection, same scope as speaker_labeler above.
         self.speaker_registry = speaker_module.SessionSpeakerRegistry()
         self.last_turn_text = None  # Phase 2: topic_change needs the previous turn's text
+        # 2026-08-16 fix (build plan §11a): speaker.py now caches the
+        # underlying construction failure itself (so it stops re-attempting
+        # a doomed import every turn), but the per-turn print below was
+        # still firing on every single turn regardless — real prod
+        # evidence: identical "[diarize] mode=embedding failed..." lines
+        # on every turn of a whole session. These two flags let each mode
+        # print its failure once per *connection* instead of once per
+        # turn; the actual naive-fallback behavior is unchanged either way.
+        self._diarize_embedding_warned = False
+        self._diarize_pyannote_full_warned = False
         # Phase 4: answer-level switching. Session-wide, not per-question —
         # a client-sent "set_answer_level" message (see receive()) changes
         # this for every suggestion generated from here on, until changed
@@ -311,7 +321,9 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                     flush=True,
                 )
             except Exception as exc:
-                print(f"[diarize] mode=embedding failed, falling back to naive: {exc!r}", flush=True)
+                if not self._diarize_embedding_warned:
+                    print(f"[diarize] mode=embedding failed, falling back to naive: {exc!r}", flush=True)
+                    self._diarize_embedding_warned = True
                 speaker_label = None
         elif mode == "pyannote_full":
             try:
@@ -324,7 +336,9 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                     flush=True,
                 )
             except Exception as exc:
-                print(f"[diarize] mode=pyannote_full failed, falling back to naive: {exc!r}", flush=True)
+                if not self._diarize_pyannote_full_warned:
+                    print(f"[diarize] mode=pyannote_full failed, falling back to naive: {exc!r}", flush=True)
+                    self._diarize_pyannote_full_warned = True
                 speaker_label = None
 
         if not speaker_label:
@@ -366,7 +380,8 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         extraction is best-effort on top of a working transcript, not a
         blocker for one.
 
-        EXTRACTION_MODE (2026-08-16) — "rule_based" (default) or "llm":
+        EXTRACTION_MODE (2026-08-16) — "rule_based" (default), "llm", or
+        "hybrid":
         rule_based is conversation/intent.py's regex extractor: zero extra
         latency, zero dependencies, works with no network — this is what's
         actually been tested across every session so far, and what the
@@ -381,9 +396,31 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         against real sessions, the same mistake almost made with the
         speaker diarization config earlier in this build.
 
-        On any llm-mode failure, this falls back to rule_based for that
-        turn rather than losing extraction entirely — same "never take the
-        session down over this" posture as the outer try/except below.
+        "hybrid" (2026-08-16, added per the recon findings after two more
+        missing-verb bugs turned up in the same session — see build plan
+        §11a): runs rule_based first (same zero-latency path as always),
+        and only calls llm_extract for that turn when rule_based returns
+        *zero* items. This is deliberately not "always run both" — the
+        whole point is to keep paying rule_based's near-zero cost on the
+        turns it already handles correctly (the large majority, per every
+        session logged so far) and only pay the Groq round-trip on turns
+        it's blind to. It will NOT catch every gap rule_based has (a turn
+        that's a genuine zero — "okay", "thank you" — also triggers the
+        LLM call, since this module has no way to distinguish "correctly
+        found nothing" from "missed something"; that's an accepted cost,
+        not a bug), but it does mean a future missing-verb-shaped gap like
+        "discuss"/"cover" wouldn't have silently produced zero suggestions
+        for an entire prompt the way it did this session — llm_extract
+        would have caught it the same turn, not three "repeat that
+        question"s later. Still opt-in via env, same posture as "llm"
+        above — not the default until it's been run against a real
+        session and the extra latency/cost on genuine-zero turns has been
+        judged acceptable.
+
+        On any llm-mode (or hybrid's llm fallback) failure, this falls
+        back to rule_based's result for that turn rather than losing
+        extraction entirely — same "never take the session down over
+        this" posture as the outer try/except below.
         """
         extraction_mode = os.environ.get("EXTRACTION_MODE", "rule_based")
 
@@ -400,6 +437,28 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                         flush=True,
                     )
                     found = await asyncio.to_thread(intent_module.extract, turn.text, self.last_turn_text)
+            elif extraction_mode == "hybrid":
+                found = await asyncio.to_thread(intent_module.extract, turn.text, self.last_turn_text)
+                if not found:
+                    from conversation import llm_extract
+
+                    try:
+                        llm_found = await asyncio.to_thread(
+                            llm_extract.extract, turn.text, self.last_turn_text
+                        )
+                        if llm_found:
+                            print(
+                                f"[extract] turn {turn.id}: rule_based found nothing, "
+                                f"llm fallback found {len(llm_found)} item(s)",
+                                flush=True,
+                            )
+                        found = llm_found
+                    except Exception as e:
+                        print(
+                            f"[extract] turn {turn.id}: hybrid llm fallback failed ({e!r}), "
+                            "keeping rule_based's empty result for this turn",
+                            flush=True,
+                        )
             else:
                 found = await asyncio.to_thread(intent_module.extract, turn.text, self.last_turn_text)
         except Exception as e:

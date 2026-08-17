@@ -70,5 +70,13 @@
     "C: Debug mode is enabled for this build.",
     "C: Redesign efforts are underway.",
     "C: Next, let's talk about culture fit."
+  ],
+  "interview_recon_2026_08_16": [
+    "A: Discuss the algorithm choice, trade-offs, and implement the core components.",
+    "B: Sure, sliding window log for accuracy, sharded by user and endpoint key.",
+    "A: Cover APIs, data modeling, tenant-specific delivery policies, retries with backoff, and dead letter queues.",
+    "B: I would start with a fan-out worker per channel type behind a shared queue.",
+    "C: Discussion is scheduled for Friday, not today.",
+    "C: Cover charge applies after 9pm at that venue."
   ]
 }
