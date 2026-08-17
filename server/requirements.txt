@@ -58,7 +58,7 @@ llama-cpp-python>=0.3,<0.4
 # pyannote/speaker-diarization-3.1 — accept both models' terms on
 # huggingface.co first, "embedding" mode only downloads the smaller
 # pyannote/embedding model at runtime, not the full pipeline's weights):
-# pyannote.audio>=3.1,<4.0
+pyannote.audio>=3.1,<4.0
 
 # Added in later phases — uncomment as you build them:
 # sentence-transformers

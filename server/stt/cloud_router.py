@@ -79,11 +79,21 @@ def _transcribe_via_groq(audio: np.ndarray, language: str | None) -> dict:
     model = os.environ.get("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
     wav_bytes = _float32_to_wav_bytes(audio)
 
+    # Same free vocabulary-biasing nudge as stt/engine.py's
+    # WHISPER_INITIAL_PROMPT (shared env var, so setting it once covers
+    # both paths) — previously only wired into the local faster-whisper
+    # fallback, even though Groq is the actual STT path live traffic
+    # hits (STT_PROVIDER=groq, local engine only used on Groq failure).
+    # Groq's audio.transcriptions endpoint accepts the same `prompt`
+    # param as OpenAI's Whisper API.
+    prompt = os.environ.get("WHISPER_INITIAL_PROMPT", "").strip() or None
+
     try:
         response = client.audio.transcriptions.create(
             file=("segment.wav", wav_bytes),
             model=model,
             language=language,
+            prompt=prompt,
         )
     except (APIConnectionError, APITimeoutError, RateLimitError, APIError) as e:
         raise RuntimeError(f"Groq transcription failed: {e}") from e
