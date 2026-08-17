@@ -52,6 +52,12 @@ DEFAULT_ANSWER_LEVEL = "medium"
 # (and often will) land short of it. Overridable per-level via env (see
 # get_max_tokens) for tuning without a code change once real usage shows
 # whether these defaults are too generous/stingy on your actual hardware.
+#
+# 2026-08-17: bumped up from the original 60/150/350 (tuned for the old
+# non-reasoning llama-3.1-8b-instant) to give gpt-oss-20b's hidden
+# reasoning tokens headroom on top of the visible answer — see
+# ai/cloud_router.py's reasoning_effort comment for the full incident.
+# This is a backstop alongside reasoning_effort=low, not the primary fix.
 ANSWER_LEVELS = {
     "quick": {
         "label": "Quick",
@@ -59,7 +65,7 @@ ANSWER_LEVELS = {
             "Answer in one short sentence — the fewest words that fully "
             "answer it, sayable out loud in under 3 seconds."
         ),
-        "max_tokens": 60,
+        "max_tokens": 150,
     },
     "medium": {
         "label": "Medium",
@@ -67,7 +73,7 @@ ANSWER_LEVELS = {
             "Answer in two to three concise sentences — enough to be "
             "useful without rambling."
         ),
-        "max_tokens": 150,
+        "max_tokens": 300,
     },
     "detailed": {
         "label": "Detailed",
@@ -75,7 +81,7 @@ ANSWER_LEVELS = {
             "Answer more fully — a short paragraph is fine if it adds "
             "real value, but stay focused and avoid padding."
         ),
-        "max_tokens": 350,
+        "max_tokens": 600,
     },
 }
 
@@ -101,16 +107,21 @@ def get_max_tokens(level):
 
 
 # Phase 5 (2026-08-16): code answers need a much bigger budget than any
-# ANSWER_LEVELS entry — none of quick/medium/detailed (60/150/350) fit an
-# actual function body, let alone the surrounding fenced block and a
-# line or two of explanation. Kept as flat level->tokens map (not a
-# multiplier on ANSWER_LEVELS) so each can be tuned independently once
-# real usage shows whether these are too generous/stingy, same reasoning
+# ANSWER_LEVELS entry — none of quick/medium/detailed fit an actual
+# function body, let alone the surrounding fenced block and a line or
+# two of explanation. Kept as flat level->tokens map (not a multiplier
+# on ANSWER_LEVELS) so each can be tuned independently once real usage
+# shows whether these are too generous/stingy, same reasoning
 # ANSWER_LEVELS' own docstring gives for its numbers.
+#
+# 2026-08-17: bumped from 250/500/900 — same reasoning-model headroom
+# fix as ANSWER_LEVELS above; code prompts were hitting empty responses
+# more than prose ones since they're longer/harder, giving gpt-oss-20b's
+# hidden reasoning more room to consume the whole budget.
 CODE_MAX_TOKENS = {
-    "quick": 250,
-    "medium": 500,
-    "detailed": 900,
+    "quick": 500,
+    "medium": 900,
+    "detailed": 1500,
 }
 
 

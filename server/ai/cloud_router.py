@@ -81,7 +81,11 @@ def _suggest_via_groq(
     from groq import APIConnectionError, APIError, APITimeoutError, RateLimitError
 
     client = _get_groq_client()
-    model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+    # 2026-08-17: llama-3.1-8b-instant was deprecated by Groq (every call
+    # was 404ing in prod — see console.groq.com/docs/deprecations). Groq's
+    # own migration guidance recommends openai/gpt-oss-20b as the
+    # replacement. Still fully overridable via GROQ_MODEL.
+    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.4"))
 
     if answer_format == "code":
@@ -102,6 +106,23 @@ def _suggest_via_groq(
             ],
             max_tokens=max_tokens,
             temperature=temperature,
+            # 2026-08-17: gpt-oss-20b is a reasoning model — it spends part
+            # of max_tokens on hidden chain-of-thought before writing any
+            # visible content. With max_tokens budgets tuned for the old
+            # non-reasoning llama-3.1-8b-instant (60/150/350 prose,
+            # 250/500/900 code), reasoning was intermittently eating the
+            # entire budget on harder/longer prompts, leaving
+            # choices[0].message.content empty — real prod evidence: ~6 of
+            # 15 suggestion attempts in one session hit "Groq returned an
+            # empty response" specifically on system-design/code prompts,
+            # never on short ones like "What's your name?". reasoning_effort
+            # (Groq-specific, only supported by gpt-oss-20b/120b: low/medium/
+            # high, default medium) directly reduces reasoning-token spend
+            # rather than just giving it more room to still consume — kept
+            # as the primary fix, with the max_tokens bumps below as a
+            # backstop in case low-effort reasoning still eats a meaningful
+            # chunk on the hardest prompts.
+            reasoning_effort=os.environ.get("GROQ_REASONING_EFFORT", "low"),
         )
     except (APIConnectionError, APITimeoutError, RateLimitError, APIError) as e:
         raise RuntimeError(f"Groq request failed: {e}") from e

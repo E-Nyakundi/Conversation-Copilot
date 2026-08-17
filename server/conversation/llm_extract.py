@@ -149,7 +149,10 @@ def extract(text: str, previous_text: str | None = None) -> list[ExtractedItem]:
     from groq import APIConnectionError, APIError, APITimeoutError, RateLimitError
 
     client = _get_groq_client()
-    model = os.environ.get("EXTRACTION_GROQ_MODEL", os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"))
+    # Same 2026-08-17 fix as ai/cloud_router.py — llama-3.1-8b-instant
+    # is deprecated on Groq's end, default updated to their recommended
+    # replacement. Still fully overridable via EXTRACTION_GROQ_MODEL/GROQ_MODEL.
+    model = os.environ.get("EXTRACTION_GROQ_MODEL", os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b"))
 
     try:
         response = client.chat.completions.create(

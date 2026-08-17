@@ -59,6 +59,16 @@ llama-cpp-python>=0.3,<0.4
 # huggingface.co first, "embedding" mode only downloads the smaller
 # pyannote/embedding model at runtime, not the full pipeline's weights):
 pyannote.audio>=3.1,<4.0
+# 2026-08-17 prod incident: pyannote 3.x's Model.from_pretrained()/
+# hf_hub_download() calls still use the old `use_auth_token` kwarg.
+# huggingface_hub 1.x renamed it to `token` and dropped the old name
+# entirely, so an unpinned install resolves huggingface_hub to the
+# latest 1.x and every embedding-mode diarization call fails with
+# `TypeError: hf_hub_download() got an unexpected keyword argument
+# 'use_auth_token'` — pyannote.audio itself loads fine, this is a
+# transitive-dependency version mismatch, not a missing package.
+# Pinning below 1.0 keeps the old kwarg name pyannote 3.x expects.
+huggingface_hub<1.0
 
 # Added in later phases — uncomment as you build them:
 # sentence-transformers
