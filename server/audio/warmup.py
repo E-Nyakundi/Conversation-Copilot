@@ -62,9 +62,21 @@ def run_warmup():
     # network here, so we just confirm it's configured and loadable.
     llm_path = os.environ.get("LLM_MODEL_PATH", "")
     if not llm_path:
+        # 2026-08-17 fix: this used to say "suggestions will be silently
+        # disabled until you set it" — misleading, and contradicted by
+        # two real prod sessions now (both logged) where suggestions
+        # worked fine end-to-end via Groq with this exact warning
+        # printed at startup. LLM_MODEL_PATH only gates the *local,
+        # no-network* fallback model — it has no bearing on the
+        # Groq-primary path that's actually serving suggestions in
+        # every session logged so far. Reworded to say that plainly,
+        # so this line stops reading like an outage warning when it
+        # isn't one.
         print(
-            "[warmup] LLM_MODEL_PATH not set — skipping local LLM warm-up "
-            "(suggestions will be silently disabled until you set it).",
+            "[warmup] LLM_MODEL_PATH not set — skipping local LLM warm-up. "
+            "Suggestions still work via the Groq cloud path (primary); this "
+            "only means there's no offline/no-network fallback configured "
+            "if Groq becomes unavailable mid-session.",
             flush=True,
         )
     else:

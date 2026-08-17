@@ -1,82 +1,56 @@
-// Phase 4 (2026-08-16) — smart, paced, no-touch code reveal.
+// Phase 4 (2026-08-16 → 2026-08-17) — smart, paced, no-touch code reveal.
 //
-// Design record: build plan §11b. Built from a real, explicitly stated use
-// case, not a guess: the person reading this card is hand-typing the code
-// into a *separate* device (not clipboard copy) and cannot touch the phone
-// while doing it — they need the phone to hold still on one line long
-// enough to type it, then commit to a clean jump to the next line, entirely
-// on its own.
+// Design record: build plan §11b (original stepped-line design) + §13
+// (this rewrite — real-time typing simulation). Built from a real,
+// explicitly stated use case: the person reading this card is
+// hand-typing the code into a *separate* device (not clipboard copy) and
+// cannot touch the phone while doing it.
 //
-// Deliberately NOT a smooth/continuous scroll — decided against explicitly
-// (see build plan): a moving target fights against "hold still while I
-// type this line". Instead this is a stepped reveal: one physical line per
-// step, no grouping of trivial short lines (also explicitly decided — a
-// lone "}" still gets its own step), each step's hold duration estimated
-// from that line's own complexity.
+// v1 of this widget (§12b) revealed one whole line at a time, held for a
+// flat duration, then jump-cut to the next. Ed's follow-up feedback: that
+// read as "slow enough to read, not slow enough to hand-copy," and didn't
+// feel like watching an actual developer work. This rewrite replaces the
+// per-line hold with a character-by-character typing simulation —
+// variable rhythm (fast through whitespace/punctuation, slower through
+// identifiers, a breath-pause after `{`/`:`/`,`, a longer think-pause
+// before a new line), plus real typo-then-backspace-then-correct
+// mistakes on identifier characters, per Ed's explicit instruction
+// ("include the typo, the correction... as real as possible").
 //
-// This file is a standalone, non-Flutter-toolchain-verified addition (same
-// caveat as every other Flutter change in this build plan) — checked by
-// hand for brace/paren balance and Dart syntax, not run through
-// `flutter analyze` or a real build.
+// One open design question from the discussion was never answered before
+// the session moved to logs/implementation (Q: keep the dimmed lookahead
+// preview now that a live cursor exists, or drop it?). Decision made
+// here, flagged rather than silently assumed: the lookahead is DROPPED.
+// Two reasons: (1) a live per-character cursor already does the
+// "anchoring" job the lookahead was originally there for, so it's
+// redundant; (2) revealing upcoming lines ahead of the typing cursor
+// would let a fast reader jump ahead of the pace the whole feature
+// exists to slow down to, which fights the actual goal (give hands-typing
+// time). If this was wrong, it's a one-line change to reintroduce a
+// dimmed preview of buffered-but-not-yet-typed lines.
+//
+// Overflow handling also changes shape: v1 solved overflow by only ever
+// showing 1 active + N lookahead lines. That doesn't fit "watch a
+// developer type in their editor" — real editors accumulate text. So
+// this version uses a fixed-height scrolling viewport instead: typed
+// lines accumulate like a real editor buffer, and the view jump-scrolls
+// (never smooth/animated — consistent with the original "no continuous
+// scroll" decision) to keep the active typing position in view. Already-
+// typed lines scroll off the top exactly the way a terminal or a tall
+// file does in a short editor pane, not by hiding future content.
+//
+// This file is a standalone, non-Flutter-toolchain-verified addition
+// (same caveat as every other Flutter change in this build plan) —
+// checked by hand for brace/paren balance and Dart syntax, not run
+// through `flutter analyze` or a real build.
 
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
-/// Per-line pacing estimate — how long a line should stay on screen for
-/// someone hand-typing it into a separate device (slower than reading
-/// speed, closer to hand-typing-code speed).
-class LinePacing {
-  // Baseline hand-typing-code pace assumption. Deliberately conservative
-  // (slower than average reading/typing speed) since the person is
-  // transcribing character-by-character to a second device while glancing
-  // back and forth, not just reading. Tune here if real sessions show this
-  // running too fast/slow — no other call site needs to change.
-  static const double msPerChar = 85.0;
-
-  // Minimum hold time for ANY non-trivial line, regardless of how short —
-  // "find my place, glance up, start typing" has a real fixed cost that
-  // doesn't go to zero even for a short line.
-  static const Duration lineFloor = Duration(milliseconds: 900);
-
-  // Trivial lines (blank, or pure closing punctuation like "}", "});",
-  // ");") still get their own step per the explicit no-grouping decision,
-  // but a much shorter one — there's really nothing to type-check here.
-  static const Duration blankLineHold = Duration(milliseconds: 400);
-  static const Duration trivialLineHold = Duration(milliseconds: 600);
-
-  // Sane upper cap so one absurdly long/dense line can't stall the whole
-  // reveal for an unreasonable amount of time.
-  static const Duration lineCap = Duration(milliseconds: 12000);
-
-  static final RegExp _trivialLine = RegExp(r'^[\}\)\];,]+$');
-
-  /// Estimated hold duration for [line] (without its own trailing newline).
-  static Duration forLine(String line) {
-    final trimmed = line.trim();
-    if (trimmed.isEmpty) return blankLineHold;
-    if (_trivialLine.hasMatch(trimmed)) return trivialLineHold;
-
-    final meaningfulChars = trimmed.length;
-    // Symbol/punctuation density as a rough proxy for typing difficulty —
-    // a line dense with generics/lambdas/braces takes longer to get right
-    // than the same character count in plain identifiers.
-    final symbolCount =
-        trimmed.replaceAll(RegExp(r'[A-Za-z0-9\s]'), '').length;
-    final symbolDensity = meaningfulChars == 0 ? 0.0 : symbolCount / meaningfulChars;
-    final complexityMultiplier = 1.0 + symbolDensity;
-
-    final rawMs = meaningfulChars * msPerChar * complexityMultiplier;
-    final ms = rawMs < lineFloor.inMilliseconds
-        ? lineFloor.inMilliseconds.toDouble()
-        : rawMs;
-    final capped = ms > lineCap.inMilliseconds ? lineCap.inMilliseconds.toDouble() : ms;
-    return Duration(milliseconds: capped.round());
-  }
-}
-
 /// Estimated read time for prose (used by the interrupting text overlay,
-/// not the code path above) — same "how long does a human need" spirit,
-/// tuned for reading rather than hand-typing.
+/// not the code-typing path below) — "how long does a human need to
+/// read this", tuned for reading rather than hand-typing.
 class ReadPacing {
   static const double msPerWord = 260.0; // ~230 wpm, a bit under average adult silent-reading speed, biased slow on purpose
   static const Duration floor = Duration(milliseconds: 1200);
@@ -91,10 +65,136 @@ class ReadPacing {
   }
 }
 
-/// Drives one [PacedCodeReveal]'s auto-advance state from outside the
+/// One step in a precomputed typing "script": the full buffer text at
+/// this point in time, and how long to wait (after the previous step)
+/// before this state becomes visible. Precomputing the whole script up
+/// front (rather than deciding rhythm live, char by char) keeps the
+/// widget's timer loop dead simple — it's just walking a list — and
+/// makes the rhythm logic trivially unit-testable in isolation later.
+class _TypeStep {
+  const _TypeStep(this.text, this.delay);
+  final String text;
+  final Duration delay;
+}
+
+/// QWERTY-adjacent keys per letter, for plausible (not random-anywhere-
+/// on-the-keyboard) typo substitutions. Deliberately a rough/approximate
+/// map, not a full physical-keyboard model — good enough to look like a
+/// real mistake ("teh" not "txw").
+const Map<String, String> _qwertyNeighbors = {
+  'q': 'wa', 'w': 'qes', 'e': 'wrd', 'r': 'etf', 't': 'ryg', 'y': 'tuh',
+  'u': 'yij', 'i': 'uok', 'o': 'ipl', 'p': 'ol',
+  'a': 'qsz', 's': 'awdz', 'd': 'sefx', 'f': 'drtgc', 'g': 'fthv',
+  'h': 'gyjb', 'j': 'huk', 'k': 'jil', 'l': 'ko',
+  'z': 'asx', 'x': 'zsdc', 'c': 'xdfv', 'v': 'cfgb', 'b': 'vghn',
+  'n': 'bhjm', 'm': 'njk',
+};
+
+String _typoFor(String ch, math.Random rng) {
+  final lower = ch.toLowerCase();
+  final neighbors = _qwertyNeighbors[lower];
+  var result = (neighbors != null && neighbors.isNotEmpty)
+      ? neighbors[rng.nextInt(neighbors.length)]
+      : String.fromCharCode(97 + rng.nextInt(26));
+  if (ch != lower) result = result.toUpperCase();
+  return result;
+}
+
+double _jitterRange(math.Random rng, num lo, num hi) =>
+    lo + rng.nextDouble() * (hi - lo);
+
+/// Builds the full character-by-character typing script for [code]:
+/// variable per-character rhythm, breath-pauses after "opening"
+/// punctuation, a think-pause before each new line, and probabilistic
+/// typo-then-backspace-then-correct sequences on identifier characters.
+List<_TypeStep> buildTypingScript(String code, {int? seed}) {
+  final rng = math.Random(seed);
+  final steps = <_TypeStep>[];
+  final buffer = StringBuffer();
+  var pendingExtraMs = 0.0;
+
+  double charDelayMs(String ch, bool isSpace) {
+    if (isSpace) return _jitterRange(rng, 8, 22); // whitespace/indent: fast, no thought needed
+    if (RegExp(r'[A-Za-z_]').hasMatch(ch)) {
+      return _jitterRange(rng, 60, 130); // identifier letters: naming takes a beat
+    }
+    if (RegExp(r'[0-9]').hasMatch(ch)) return _jitterRange(rng, 35, 75);
+    return _jitterRange(rng, 28, 65); // other punctuation/operators
+  }
+
+  void pushStep(double extraMs) {
+    steps.add(_TypeStep(
+      buffer.toString(),
+      Duration(milliseconds: (pendingExtraMs + extraMs).round()),
+    ));
+    pendingExtraMs = 0;
+  }
+
+  final lines = code.split('\n');
+  for (var li = 0; li < lines.length; li++) {
+    final line = lines[li];
+
+    if (li > 0) {
+      buffer.write('\n');
+      pushStep(_jitterRange(rng, 70, 130)); // pressing Enter
+      final trimmed = line.trim();
+      // Longer "find my place, decide what's next" pause before a new
+      // line's first character — reuses the original design's "find my
+      // place" floor, just relocated to the front of the line instead of
+      // baked into a flat post-line hold. Blank lines get a shorter beat.
+      pendingExtraMs = trimmed.isEmpty
+          ? _jitterRange(rng, 180, 340)
+          : _jitterRange(rng, 480, 850);
+    }
+
+    var identStreak = 0;
+    for (var i = 0; i < line.length; i++) {
+      final ch = line[i];
+      final isSpace = ch == ' ' || ch == '\t';
+      final isIdentChar = RegExp(r'[A-Za-z0-9_]').hasMatch(ch);
+      identStreak = isIdentChar ? identStreak + 1 : 0;
+
+      // Typos only on identifier characters, and only once a real word
+      // has started (streak > 2) — a mistake on the very first letter of
+      // a name reads as noise, not realism. Kept intentionally
+      // infrequent: this simulates a careful-ish developer, not someone
+      // who can't type.
+      final doTypo = isIdentChar &&
+          identStreak > 2 &&
+          RegExp(r'[A-Za-z]').hasMatch(ch) &&
+          rng.nextDouble() < 0.045;
+
+      if (doTypo) {
+        buffer.write(_typoFor(ch, rng));
+        pushStep(charDelayMs(ch, isSpace));
+        pushStep(_jitterRange(rng, 220, 420)); // notice the mistake
+        final s = buffer.toString();
+        buffer
+          ..clear()
+          ..write(s.substring(0, s.length - 1)); // backspace
+        pushStep(_jitterRange(rng, 70, 140));
+      }
+
+      buffer.write(ch);
+      pushStep(charDelayMs(ch, isSpace));
+
+      if ('{:,('.contains(ch)) {
+        // Breath-point: a beat before deciding what comes next, mirrored
+        // as extra delay on the NEXT character rather than this one.
+        pendingExtraMs = _jitterRange(rng, 160, 320);
+      }
+    }
+  }
+
+  return steps;
+}
+
+/// Drives one [PacedCodeReveal]'s typing simulation from outside the
 /// widget tree — lets the parent screen pause a specific code card (e.g.
-/// while a text-suggestion overlay is interrupting it) without the parent
-/// needing to know anything about line indices or timers.
+/// while a text-suggestion overlay is interrupting it) without the
+/// parent needing to know anything about the typing script internals.
+/// Public API unchanged from the v1 (line-stepped) controller so
+/// `live_session_screen.dart`'s wiring didn't need to change.
 class PacedCodeRevealController extends ChangeNotifier {
   bool _pausedByOverlay = false;
   bool get pausedByOverlay => _pausedByOverlay;
@@ -144,45 +244,62 @@ class PacedCodeRevealController extends ChangeNotifier {
   }
 }
 
-/// Stepped, paced, no-touch code reveal. One physical line active +
-/// visible lookahead below it (karaoke-style anchor), jump-cut (not
-/// smooth-scrolled) between lines, each line's hold duration from
-/// [LinePacing]. A tap pauses auto-advance entirely (manual override) —
-/// the small "resume auto" affordance is the one deliberate touch
-/// exception, not continuous scrolling.
+/// Real-time, character-by-character typing simulation of [code] — fast
+/// through whitespace/punctuation, slower and pausier through
+/// identifiers, occasional realistic typo-then-backspace-then-correct
+/// sequences, a think-pause before each new line. Renders in a fixed-
+/// height, jump-scrolling (never smooth-animated) viewport so a long
+/// snippet never overflows the card regardless of length — already-typed
+/// lines scroll off the top like a real editor/terminal pane, rather
+/// than the whole answer ever being visible at once.
+///
+/// A tap pauses the simulation entirely (manual override) — the one
+/// deliberate touch exception, same as v1, not continuous scrolling.
 class PacedCodeReveal extends StatefulWidget {
   const PacedCodeReveal({
     super.key,
     required this.code,
     required this.controller,
-    this.lookaheadLines = 2,
+    this.viewportHeight = 210,
   });
 
   final String code;
   final PacedCodeRevealController controller;
-  final int lookaheadLines;
+  final double viewportHeight;
 
   @override
   State<PacedCodeReveal> createState() => _PacedCodeRevealState();
 }
 
 class _PacedCodeRevealState extends State<PacedCodeReveal> {
-  late final List<String> _lines;
-  int _index = 0;
+  late final List<_TypeStep> _script;
+  final ScrollController _scrollCtl = ScrollController();
+
+  int _stepIndex = 0;
+  String _displayText = '';
   Timer? _timer;
+
+  bool _cursorOn = true;
+  Timer? _cursorBlinkTimer;
 
   @override
   void initState() {
     super.initState();
-    _lines = widget.code.split('\n');
+    _script = buildTypingScript(widget.code);
     widget.controller.addListener(_onControllerChanged);
+    _cursorBlinkTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      if (!mounted) return;
+      setState(() => _cursorOn = !_cursorOn);
+    });
     _scheduleNext();
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _cursorBlinkTimer?.cancel();
     widget.controller.removeListener(_onControllerChanged);
+    _scrollCtl.dispose();
     super.dispose();
   }
 
@@ -203,15 +320,29 @@ class _PacedCodeRevealState extends State<PacedCodeReveal> {
   void _scheduleNext() {
     _timer?.cancel();
     if (!_autoAdvancing) return;
-    if (_index >= _lines.length - 1) {
+    if (_stepIndex >= _script.length) {
       widget.controller.markFinished();
       return;
     }
-    final duration = LinePacing.forLine(_lines[_index]);
-    _timer = Timer(duration, () {
+    final step = _script[_stepIndex];
+    _timer = Timer(step.delay, () {
       if (!mounted || !_autoAdvancing) return;
-      setState(() => _index++);
+      setState(() => _displayText = step.text);
+      _stepIndex++;
+      _snapScrollToBottom();
       _scheduleNext();
+    });
+  }
+
+  // Jump (never animate) the viewport to the bottom so the active typing
+  // position always stays visible — mirrors how a terminal or a short
+  // editor pane naturally follows the cursor. Deliberately jumpTo, not
+  // animateTo: a moving/gliding scroll was already explicitly rejected
+  // for this feature (fights "hold still while I type this").
+  void _snapScrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollCtl.hasClients) return;
+      _scrollCtl.jumpTo(_scrollCtl.position.maxScrollExtent);
     });
   }
 
@@ -226,9 +357,7 @@ class _PacedCodeRevealState extends State<PacedCodeReveal> {
 
   @override
   Widget build(BuildContext context) {
-    final start = _index;
-    final end = (start + 1 + widget.lookaheadLines).clamp(0, _lines.length);
-    final visible = _lines.sublist(start, end);
+    final showCursor = !widget.controller.isFinished && _cursorOn;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -237,35 +366,35 @@ class _PacedCodeRevealState extends State<PacedCodeReveal> {
           onTap: _handleManualTap,
           behavior: HitTestBehavior.opaque,
           child: Container(
+            height: widget.viewportHeight,
+            width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             decoration: BoxDecoration(
               color: Colors.black.withValues(alpha: 0.18),
               borderRadius: BorderRadius.circular(6),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (var i = 0; i < visible.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 1),
-                    child: Text(
-                      visible[i].isEmpty ? ' ' : visible[i],
+            child: SingleChildScrollView(
+              controller: _scrollCtl,
+              physics: const NeverScrollableScrollPhysics(),
+              child: RichText(
+                text: TextSpan(
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 12.5,
+                    height: 1.45,
+                    color: Colors.white,
+                  ),
+                  children: [
+                    TextSpan(text: _displayText),
+                    TextSpan(
+                      text: '▌',
                       style: TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 12.5,
-                        height: 1.45,
-                        // Active (first visible) line stays anchored/
-                        // highlighted so a jump-cut doesn't disorient, and
-                        // so returning from a paused/overlay state lands
-                        // the eye right back where it was.
-                        color: i == 0
-                            ? Colors.white
-                            : Colors.white.withValues(alpha: 0.38),
-                        fontWeight: i == 0 ? FontWeight.w600 : FontWeight.normal,
+                        color: showCursor ? Colors.white : Colors.transparent,
                       ),
                     ),
-                  ),
-              ],
+                  ],
+                ),
+              ),
             ),
           ),
         ),
@@ -293,9 +422,9 @@ class _PacedCodeRevealState extends State<PacedCodeReveal> {
             ),
           )
         else
-          Text(
-            'Line ${_index + 1} of ${_lines.length} — auto-advancing',
-            style: const TextStyle(fontSize: 10.5, color: Colors.white38),
+          const Text(
+            'Typing…',
+            style: TextStyle(fontSize: 10.5, color: Colors.white38),
           ),
       ],
     );

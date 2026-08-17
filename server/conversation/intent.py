@@ -71,11 +71,21 @@ _SUBJECT = r"(i|you|we|they|he|she|it|this|that|there)"
 # Small closed set of sequencing/transition words that routinely open an
 # otherwise-recognized imperative sentence in real multi-part interview
 # prompts ("First, design a distributed task queue...", "Next, implement
-# an LRU cache..."). Only fires when immediately followed by a comma, so
-# it can't widen the imperative gate beyond "known transition word +
-# comma + known verb" — see the 2026-08-16 note on the imperative
-# pattern below for the real-session evidence this was added for.
-_SEQUENCE_PREFIX = r"(?:(?:first|second|third|next|then|finally|also|now)\s*,\s*)?"
+# an LRU cache..."). Originally required a literal comma right after the
+# transition word to keep the gate narrow ("known transition word +
+# comma + known verb"), but 2026-08-17 real-session evidence showed that
+# requirement was too strict for actual transcribed speech: "Then sketch
+# the components." (spoken quickly, no pause Whisper would render as a
+# comma) logged zero matches even after "sketch" was added to the verb
+# list below, while the identical "Then, sketch the components." (with a
+# comma) matched fine — the comma was gating on a Whisper transcription
+# artifact, not on anything about the sentence itself. Comma is now
+# optional. Kept requiring `\s*` (not `\s+`) either way so the gate still
+# can't widen past "known transition word directly followed by [optional
+# comma +] known verb" — "Nowhere to run" doesn't false-positive on
+# "now" because \s* still requires the next character to be whitespace/
+# comma, not "here".
+_SEQUENCE_PREFIX = r"(?:(?:first|second|third|next|then|finally|also|now)\s*,?\s*)?"
 
 # A small determiner set used to gate a handful of imperative verbs that
 # are ambiguous as bare sentence-openers (see the 2026-08-16 note below)
@@ -211,10 +221,27 @@ QUESTION_PATTERNS = [
     #     case being fixed. "Cover charge applies after 9pm." is the
     #     accepted false-positive cost, same trade as "Build number 42
     #     failed CI." in §8.
+    #
+    # 2026-08-17 (a fresh `make prod-logs` session, mock coding
+    # interview) — three more gaps, same evidence-first methodology:
+    #   - "think about" added as a fixed two-word phrase (not bare
+    #     "think" — "Think Different was Apple's slogan." is a real
+    #     plausible non-imperative opener for the bare verb, but "think
+    #     about" specifically has no such reading). Evidence: "Think
+    #     about data structures, complexity, and edge cases." logged
+    #     zero matches on its own.
+    #   - "sketch" added bare, same posture as design/build/implement —
+    #     no plausible non-imperative sentence starts with the bare verb.
+    #     Evidence: "Then sketch the components." (see the
+    #     _SEQUENCE_PREFIX fix below for why the "Then" mattered too).
+    #   - "keep" added bare, accepting a small risk (a sentence like
+    #     "Keep receipts are required." is a barely-plausible false
+    #     positive) for the same trade as cover/build/create. Evidence:
+    #     "Keep it high level, but concrete."
     (re.compile(
         rf"^\s*{_SEQUENCE_PREFIX}(tell me|describe|explain|walk( me)? through|"
-        rf"talk( me)? through|give me an example|give an example|"
-        rf"write (a|an|some)|implement|design|build|discuss|cover|"
+        rf"talk( me)? through|give me an example|give an example|think about|"
+        rf"write (a|an|some)|implement|design|build|discuss|cover|sketch|keep|"
         rf"scale {_DET}|debug {_DET}|redesign {_DET}|refactor {_DET}|"
         rf"optimize|propose|migrate|extend|create|audit|benchmark|"
         rf"list|name|outline|summarize|compare|define)\b",
