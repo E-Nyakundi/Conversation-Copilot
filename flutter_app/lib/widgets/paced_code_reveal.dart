@@ -47,6 +47,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 
 /// Estimated read time for prose (used by the interrupting text overlay,
 /// not the code-typing path below) — "how long does a human need to
@@ -260,7 +261,7 @@ class PacedCodeReveal extends StatefulWidget {
     super.key,
     required this.code,
     required this.controller,
-    this.viewportHeight = 210,
+    this.viewportHeight = 252, // was 210 — bumped ~20% for readability
   });
 
   final String code;
@@ -281,6 +282,15 @@ class _PacedCodeRevealState extends State<PacedCodeReveal> {
 
   bool _cursorOn = true;
   Timer? _cursorBlinkTimer;
+
+  // Whether the view should keep auto-jumping to the newest typed
+  // character. Starts true (follow the cursor, as before). Turns false
+  // the moment the person drags the snippet themselves — e.g. scrolling
+  // back up to re-read the start while glancing between devices — so the
+  // next typed character doesn't yank them back down. Turns true again
+  // once they scroll back down to the bottom themselves, or when they
+  // tap the "jump to latest" affordance.
+  bool _followBottom = true;
 
   @override
   void initState() {
@@ -339,7 +349,21 @@ class _PacedCodeRevealState extends State<PacedCodeReveal> {
   // editor pane naturally follows the cursor. Deliberately jumpTo, not
   // animateTo: a moving/gliding scroll was already explicitly rejected
   // for this feature (fights "hold still while I type this").
+  //
+  // Only runs while _followBottom is true, so it never fights a manual
+  // scroll the person is mid-way through (see _followBottom above).
   void _snapScrollToBottom() {
+    if (!_followBottom) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollCtl.hasClients) return;
+      _scrollCtl.jumpTo(_scrollCtl.position.maxScrollExtent);
+    });
+  }
+
+  bool _isAtBottom(ScrollMetrics m) => m.pixels >= m.maxScrollExtent - 4;
+
+  void _jumpToLatest() {
+    setState(() => _followBottom = true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollCtl.hasClients) return;
       _scrollCtl.jumpTo(_scrollCtl.position.maxScrollExtent);
@@ -373,31 +397,63 @@ class _PacedCodeRevealState extends State<PacedCodeReveal> {
               color: Colors.black.withValues(alpha: 0.18),
               borderRadius: BorderRadius.circular(6),
             ),
-            child: SingleChildScrollView(
-              controller: _scrollCtl,
-              physics: const NeverScrollableScrollPhysics(),
-              child: RichText(
-                text: TextSpan(
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 12.5,
-                    height: 1.45,
-                    color: Colors.white,
-                  ),
-                  children: [
-                    TextSpan(text: _displayText),
-                    TextSpan(
-                      text: '▌',
-                      style: TextStyle(
-                        color: showCursor ? Colors.white : Colors.transparent,
-                      ),
+            child: NotificationListener<ScrollNotification>(
+              // Manual drag anywhere in the viewport (scrolling back up to
+              // re-read the start, etc.) suspends auto-follow so the next
+              // typed character doesn't yank the view back down. Dragging
+              // back down to the bottom hands auto-follow back.
+              onNotification: (notification) {
+                if (notification is UserScrollNotification &&
+                    notification.direction != ScrollDirection.idle) {
+                  if (_followBottom) setState(() => _followBottom = false);
+                } else if (notification is ScrollEndNotification &&
+                    !_followBottom &&
+                    _isAtBottom(notification.metrics)) {
+                  setState(() => _followBottom = true);
+                }
+                return false;
+              },
+              child: SingleChildScrollView(
+                controller: _scrollCtl,
+                physics: const ClampingScrollPhysics(),
+                child: RichText(
+                  text: TextSpan(
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12.5,
+                      height: 1.45,
+                      color: Colors.white,
                     ),
-                  ],
+                    children: [
+                      TextSpan(text: _displayText),
+                      TextSpan(
+                        text: '▌',
+                        style: TextStyle(
+                          color: showCursor ? Colors.white : Colors.transparent,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
         ),
+        if (!_followBottom)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: GestureDetector(
+              onTap: _jumpToLatest,
+              child: const Text(
+                '↓ Jump to latest',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  color: Colors.white70,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+          ),
         const SizedBox(height: 6),
         if (widget.controller.isFinished)
           const Text(
