@@ -42,10 +42,49 @@ ALL_FORMATS = (CODE, PROSE, CODE_AND_PROSE)
 # Explicit "build/write/implement X" imperative verbs aimed at making
 # something — strong signal on their own even with zero other markers,
 # since these verbs are rarely used for a spoken/conceptual answer.
-_BUILD_VERBS = re.compile(
-    r"\b(write|implement|build|design|code|refactor|create|develop)\b",
+#
+# Bug fix (2026-08-24, Phase C): "design", "build", and "develop" are
+# common as NOUNS/adjectives too ("design philosophy", "product
+# development", "a well-designed system") and, unlike "write"/
+# "implement"/"code"/"refactor" (which are essentially always verbs in
+# practice), a bare \b match on the word alone was catching these noun
+# uses and misrouting plain opinion/background questions ("what's your
+# favorite design philosophy?") to CODE_AND_PROSE with zero technical
+# signal behind it. Root cause confirmed against a real prod turn:
+# "How would you design a real-time notification system? Think about
+# delivery guarantees, offline cases, and scaling" — an architecture/
+# judgment question with no code request, no DS/algo term, and no
+# language — got flagged as a build verb purely because "design"
+# appeared anywhere in the string. That particular sentence's eventual
+# CODE_AND_PROSE routing was arguably still the right *outcome* per this
+# module's own "broad build ask benefits from both" reasoning below, but
+# arriving there via a coincidental noun/verb match rather than a real
+# imperative-verb signal is the wrong mechanism, and it fails outright on
+# sentences where "design"/"build"/"develop" is unambiguously a noun.
+#
+# Fix: for design/build/develop specifically, require an imperative
+# construction — the verb near the start of the sentence/clause (optionally
+# after a modal like "how would you", "can you", "could you"), OR directly
+# preceded by "to"/"and" (infinitive/coordinated imperative: "...and design
+# a caching layer"). This is deliberately narrower than a bare \b match,
+# not broader — write/implement/code/refactor keep the original bare match
+# since they don't have this noun-collision problem.
+_BUILD_VERBS_UNAMBIGUOUS = re.compile(
+    r"\b(write|implement|code|refactor)\b",
     re.IGNORECASE,
 )
+_BUILD_VERBS_IMPERATIVE_ONLY = re.compile(
+    r"(^\s*(?:how would you|how do you|can you|could you|would you|please)?\s*"
+    r"(?:design|architect|build|develop|create)\b"
+    r"|\b(?:to|and)\s+(?:design|architect|build|develop|create)\b)",
+    re.IGNORECASE,
+)
+
+
+def _has_build_verb(text: str) -> bool:
+    return bool(_BUILD_VERBS_UNAMBIGUOUS.search(text)) or bool(
+        _BUILD_VERBS_IMPERATIVE_ONLY.search(text)
+    )
 
 # Command-style algorithm verbs ("reverse a linked list", "detect a
 # cycle", "check if X is a palindrome") — deliberately NOT folded into
@@ -123,6 +162,7 @@ _PROSE_SIGNALS = re.compile(
     r"approach to|what do you think about|in your opinion|how would you "
     r"explain|what('s| is) your experience with|have you (used|worked "
     r"with)|how familiar are you with|how comfortable are you with|"
+    r"do you (like|enjoy) working with|"
     r"what do you like about|what('s| is) it like working with|"
     r"why (do|did) you (choose|prefer|like)|what appeals to you about|"
     r"how would you compare|which do you prefer)\b",
@@ -154,7 +194,7 @@ def classify(question_text: str) -> str:
     text = question_text or ""
 
     has_explicit_code_request = bool(_EXPLICIT_CODE_REQUEST.search(text))
-    has_build_verb = bool(_BUILD_VERBS.search(text))
+    has_build_verb = _has_build_verb(text)
     has_algo_command_verb = bool(_ALGO_COMMAND_VERBS.search(text))
     has_language = bool(_LANGUAGE_SIGNALS.search(text))
     has_ds_algo = bool(_DS_ALGO_SIGNALS.search(text))

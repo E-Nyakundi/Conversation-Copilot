@@ -344,14 +344,47 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         # Any ML-based mode falls back to the naive pause labeler for
         # *this turn* on failure/timeout rather than dropping the speaker
         # label entirely, per the build plan's explicit instruction.
+        #
+        # Timeout added (2026-08-24, Phase C follow-up): the build plan's
+        # own Phase 1 revisit checklist explicitly calls for "if
+        # diarization fails OR TIMES OUT for a segment, fall back to the
+        # naive pause labeler" — the `except Exception` blocks below only
+        # ever covered the "fails" half. A model call that hangs (network
+        # stall talking to a lazily-downloaded HF resource, a wedged
+        # thread, GPU/CPU contention on this VM's already-tight 2 vCPU/
+        # 5.8GB ceiling) would previously block this turn's finalization
+        # indefinitely instead of degrading — no exception is ever raised
+        # by a hang, so the try/except had nothing to catch. Wrapped both
+        # ML branches' `asyncio.to_thread(...)` call in
+        # `asyncio.wait_for(..., timeout=DIARIZATION_TIMEOUT_S)`, new env
+        # var (default 5.0s — generous for a single-segment embed/label
+        # call, per the ~500-600ms Groq suggestion latencies already seen
+        # in real sessions, but nowhere near long enough to let a hang
+        # stall the whole WebSocket turn). `asyncio.TimeoutError` is
+        # caught by the existing `except Exception` (it's an Exception
+        # subclass), so the fallback-to-naive path and the existing
+        # one-time-per-connection warning flags are reused as-is — no
+        # new fallback logic needed, just closing the actual gap in what
+        # could reach that fallback in the first place. Note:
+        # `asyncio.wait_for` cancels the awaited task on timeout, but the
+        # underlying `to_thread` worker thread itself keeps running to
+        # completion in the background (Python threads aren't forcibly
+        # killable) — harmless here since embed()/label_segment() don't
+        # mutate shared state before returning their result, so a late,
+        # discarded result from a since-abandoned thread is simply never
+        # used, not a race with the naive label already assigned.
         mode = speaker_module.diarization_mode()
         speaker_label = None
         diarize_started = time.time()
+        diarize_timeout_s = float(os.environ.get("DIARIZATION_TIMEOUT_S", "5.0"))
 
         if mode == "embedding":
             try:
-                embedding = await asyncio.to_thread(
-                    speaker_module.get_embedder().embed, audio_np, SAMPLE_RATE
+                embedding = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        speaker_module.get_embedder().embed, audio_np, SAMPLE_RATE
+                    ),
+                    timeout=diarize_timeout_s,
                 )
                 if embedding is not None:
                     speaker_label = self.speaker_registry.assign(embedding)
@@ -367,8 +400,11 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                 speaker_label = None
         elif mode == "pyannote_full":
             try:
-                speaker_label = await asyncio.to_thread(
-                    speaker_module.get_diarizer().label_segment, audio_np, SAMPLE_RATE
+                speaker_label = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        speaker_module.get_diarizer().label_segment, audio_np, SAMPLE_RATE
+                    ),
+                    timeout=diarize_timeout_s,
                 )
                 print(
                     f"[diarize] mode=pyannote_full {(time.time() - diarize_started) * 1000:.0f}ms "

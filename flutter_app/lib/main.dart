@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'screens/home_screen.dart';
@@ -54,9 +55,19 @@ class CopilotApp extends StatelessWidget {
 /// This restores it to match what the plan and the screens already
 /// assumed was there.
 ///
-/// Per the plan: "seen onboarding" is in-memory only for now (resets on
-/// cold start) — a shared_preferences-backed flag is noted follow-up
-/// work once that dependency is added to pubspec.yaml.
+/// 2026-08-24: "seen onboarding" is now persisted via shared_preferences
+/// (the dependency flagged as follow-up work when this was in-memory-only)
+/// instead of resetting on every cold start. `_ONBOARDED_KEY`'s value is
+/// checked once in `initState` — a brief loading gap between app launch
+/// and that read completing is unavoidable with an async storage API, so
+/// `_loading` covers exactly that gap with an empty scaffold (no spinner —
+/// the read is typically sub-millisecond on-device, and a flash of a
+/// loading indicator before an already-fast check would be more visually
+/// noisy than a blank frame). On any read failure (corrupted prefs,
+/// platform channel error), defaults to `false` — treats it as a fresh
+/// install rather than crashing or getting stuck loading, since
+/// onboarding is a low-stakes one-time flow, not a security gate; worst
+/// case a returning user sees onboarding once more.
 class AppRoot extends StatefulWidget {
   const AppRoot({super.key});
 
@@ -65,12 +76,52 @@ class AppRoot extends StatefulWidget {
 }
 
 class _AppRootState extends State<AppRoot> {
+  static const _onboardedKey = 'seen_onboarding';
+
   bool _onboarded = false;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOnboardedFlag();
+  }
+
+  Future<void> _loadOnboardedFlag() async {
+    bool onboarded = false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      onboarded = prefs.getBool(_onboardedKey) ?? false;
+    } catch (_) {
+      // Corrupted prefs / platform channel failure — fall back to
+      // "not yet onboarded" rather than blocking app startup on this.
+      onboarded = false;
+    }
+    if (!mounted) return;
+    setState(() {
+      _onboarded = onboarded;
+      _loading = false;
+    });
+  }
+
+  Future<void> _markOnboarded() async {
+    setState(() => _onboarded = true);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_onboardedKey, true);
+    } catch (_) {
+      // Best-effort persistence: if this write fails, onboarding will
+      // simply show again next cold start — not a crash-worthy failure.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(backgroundColor: CopilotColors.ink);
+    }
     if (!_onboarded) {
-      return OnboardingScreen(onDone: () => setState(() => _onboarded = true));
+      return OnboardingScreen(onDone: _markOnboarded);
     }
     return const AppShell();
   }
