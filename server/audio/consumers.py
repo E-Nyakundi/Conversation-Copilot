@@ -378,7 +378,42 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         diarize_started = time.time()
         diarize_timeout_s = float(os.environ.get("DIARIZATION_TIMEOUT_S", "5.0"))
 
-        if mode == "embedding":
+        # Minimum audio duration for a reliable speaker embedding
+        # (2026-08-24 fix, found via real prod log): a segment-embedding
+        # model needs a real stretch of voiced audio to produce a stable
+        # voiceprint — short utterances ("So,", "One-one.", a few hundred
+        # ms to ~1s) produce noisy, unstable embeddings that don't reliably
+        # match ANY prior speaker centroid at a sane similarity threshold,
+        # even when spoken by the exact same person turn after turn.
+        # Confirmed against a real session: every short turn after the
+        # first got assigned a brand-new letter (A, B, C, D, E, F...) —
+        # a 4-speaker "conversation" that was actually 1-2 people, once
+        # turns got short. This isn't a threshold-tuning problem (no
+        # SPEAKER_SIMILARITY_THRESHOLD value fixes fundamentally noisy
+        # input) — it's that embedding-based diarization was being run on
+        # audio too short for the model to do its job, when the naive
+        # pause-gap labeler (which doesn't need voiceprint quality at all)
+        # is already the designated fallback and handles short utterances
+        # fine. New env var `SPEAKER_EMBED_MIN_S` (default 1.0s, informed
+        # by ECAPA/d-vector literature generally wanting >=1-2s of audio,
+        # picked as a middle ground rather than the more conservative 2s
+        # to avoid over-routing normal short replies to the naive
+        # labeler) — segments shorter than this skip the embedding call
+        # entirely and go straight to `self.speaker_labeler.label()`,
+        # same code path already used for actual embedding failures/
+        # timeouts, so no new fallback logic needed, just an earlier exit
+        # from the ML path for audio that was never going to be reliable
+        # input to it.
+        embed_min_s = float(os.environ.get("SPEAKER_EMBED_MIN_S", "1.0"))
+        segment_too_short_for_embedding = duration_s < embed_min_s
+
+        if mode == "embedding" and segment_too_short_for_embedding:
+            print(
+                f"[diarize] mode=embedding skipped (segment {duration_s:.2f}s < "
+                f"SPEAKER_EMBED_MIN_S={embed_min_s}s), using naive fallback",
+                flush=True,
+            )
+        elif mode == "embedding":
             try:
                 embedding = await asyncio.wait_for(
                     asyncio.to_thread(
