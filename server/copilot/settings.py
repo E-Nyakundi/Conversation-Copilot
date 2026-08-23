@@ -22,6 +22,13 @@ INSTALLED_APPS = [
     "audio",  # Phase 0/1: ping test + audio ingestion consumer
     "conversation",  # Phase 1: Session/Turn models (Phase 2+ will add manager/state/intent/memory here)
     "api",  # REST endpoints: session management, history
+    "ai",  # Phase 3/5: LLM suggestion generation + answer-format classification
+           # (was missing from INSTALLED_APPS despite the app existing since
+           # Phase 3 — found here in Phase B, 2026-08-23, while adding
+           # score_answer_format as a management command: Django won't
+           # discover an app's management commands unless the app is
+           # actually registered, so this was a real bug, not just missing
+           # for score_answer_format's sake)
 ]
 
 MIDDLEWARE = [

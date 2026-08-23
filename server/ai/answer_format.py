@@ -106,11 +106,26 @@ _EXPLICIT_CODE_REQUEST = re.compile(
 # Phrases that signal a spoken/conceptual answer is wanted, not code —
 # these push toward PROSE even in a technical conversation, since they
 # ask for judgment/experience/approach rather than a working artifact.
+#
+# Phase B (2026-08-23): widened from Ed's original list. The original
+# list was narrow enough that ordinary background/experience questions
+# mentioning a bare tech noun ("What's your experience with our API
+# design culture?", "Have you used Django before?", "How familiar are
+# you with React?") had NO prose signal, NO build verb, and NO DS/algo
+# term — only a bare _LANGUAGE_SIGNALS hit — and so fell through to the
+# has_language-alone CODE rule below, misclassifying plain conversational
+# questions as code asks. Added common experience/familiarity/opinion
+# framings that carry a tech noun but are asking about background, not
+# a deliverable.
 _PROSE_SIGNALS = re.compile(
     r"\b(tell me about a time|describe a time|walk( me)? through your "
     r"experience|how did you handle|why did you|what('s| is) your "
     r"approach to|what do you think about|in your opinion|how would you "
-    r"explain)\b",
+    r"explain|what('s| is) your experience with|have you (used|worked "
+    r"with)|how familiar are you with|how comfortable are you with|"
+    r"what do you like about|what('s| is) it like working with|"
+    r"why (do|did) you (choose|prefer|like)|what appeals to you about|"
+    r"how would you compare|which do you prefer)\b",
     re.IGNORECASE,
 )
 
@@ -120,14 +135,21 @@ def classify(question_text: str) -> str:
     Returns one of CODE, PROSE, or CODE_AND_PROSE.
 
     Deliberately conservative in both directions: a clear code signal
-    (language name, build verb + CS term) wins even alongside a mild
-    prose signal, since "how would you implement X" is still a code ask
-    despite starting like a prose one. Genuinely mixed, signal-free-but-
-    build-verbed, or DS/algo-flavored-but-verbless text falls to
-    CODE_AND_PROSE rather than being forced either direction — this is
-    the "narrow ambiguous band" the dual-generation path exists for. A
-    question with zero technical signal at all (e.g. "what's your
-    availability next week?") is NOT ambiguous, it's just plain PROSE.
+    (build verb + language/CS term, or an explicit code request) wins
+    even alongside a mild prose signal, since "how would you implement
+    X" is still a code ask despite starting like a prose one. Genuinely
+    mixed, signal-free-but-build-verbed, DS/algo-flavored-but-verbless,
+    or bare-language-mention-only text all fall to CODE_AND_PROSE rather
+    than being forced either direction — this is the "narrow ambiguous
+    band" the dual-generation path exists for. A question with zero
+    technical signal at all (e.g. "what's your availability next week?")
+    is NOT ambiguous, it's just plain PROSE.
+
+    Phase B (2026-08-23): a bare language/tech-noun mention with nothing
+    else technical in the sentence no longer returns CODE outright — see
+    the bare-language rule below for why. This is the fix for Ed's real-
+    session report that plain experience/background questions mentioning
+    a tech noun were being misrouted to CODE.
     """
     text = question_text or ""
 
@@ -144,6 +166,25 @@ def classify(question_text: str) -> str:
     if has_explicit_code_request:
         return CODE
 
+    # Explicit "tell me about a time"/"how did you handle" framing wins
+    # even ahead of the build-verb+language rule below, not just ahead of
+    # the bare-language rule. Bug found during Phase B fixture testing
+    # (2026-08-23): "What's your experience with our API design culture
+    # here?" contains "design" (read by _BUILD_VERBS as the imperative
+    # verb, though it's actually the noun/adjective in "design culture")
+    # alongside "API" (_LANGUAGE_SIGNALS) — that combination used to hit
+    # the build-verb+language CODE rule before the prose-signal check ever
+    # ran, misclassifying a plain experience question as CODE despite an
+    # explicit "what's your experience with" framing sitting right there.
+    # Moving this check first means an explicit prose framing always wins
+    # over a same-sentence word that merely happens to also be a build
+    # verb — this is the same "known transition word" style of gating
+    # already used elsewhere in this codebase (see intent.py's
+    # _SEQUENCE_PREFIX) to stop a coincidental word match from overriding
+    # a clearer, more specific signal.
+    if has_prose_signal:
+        return PROSE
+
     # Strong, unambiguous code ask: an explicit build verb combined with
     # either a named language or a CS-specific term ("write a function",
     # "implement an LRU cache", "build a rate limiter in Python"). Also
@@ -155,17 +196,22 @@ def classify(question_text: str) -> str:
     if (has_build_verb or has_algo_command_verb) and (has_language or has_ds_algo):
         return CODE
 
-    # A named language/library alone, with no prose framing fighting it,
-    # is still a reliable code signal even without an explicit verb
-    # ("a real-time chat server using WebSockets with clean architecture").
-    if has_language and not has_prose_signal:
-        return CODE
-
-    # Explicit "tell me about a time"/"how did you handle" framing wins
-    # even if a technical noun shows up somewhere in the same sentence —
-    # these are asking for a story or approach, not a deliverable.
-    if has_prose_signal:
-        return PROSE
+    # Bug fix (2026-08-23, Phase B): a named language/library mentioned on
+    # its own — no build verb, no DS/algo term, no explicit code request —
+    # used to return CODE outright. That was too confident: real sessions
+    # showed plain background/experience questions ("What's your take on
+    # our API design?", "Do you like working with Django?") reaching this
+    # point with nothing else technical to anchor a CODE call, and getting
+    # misclassified. A bare language mention with a real system-flavored
+    # noun still narrowly reads as a build ask ("a real-time chat server
+    # using WebSockets with clean architecture" has "server"/"architecture"
+    # alongside the language, not just the language alone), so route the
+    # remaining ambiguous case to CODE_AND_PROSE rather than a wrong
+    # confident guess in either direction — consistent with how a bare
+    # DS/algo term (below) and a bare build verb (further below) are both
+    # already handled.
+    if has_language:
+        return CODE_AND_PROSE
 
     # A CS-specific term with no build verb and no prose framing is a
     # real ambiguous case ("how do you think about cache invalidation?"

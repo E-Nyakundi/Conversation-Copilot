@@ -22,6 +22,14 @@ class CopilotApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Conversation Copilot',
+      // Phase A (2026-08-23): release hygiene. This was never set, so
+      // every build — including ones handed to Ed for real device
+      // testing — showed Flutter's default red "DEBUG" ribbon in the
+      // top-right corner regardless of build mode. Suppressing the
+      // banner here doesn't change build mode/behavior at all, just the
+      // visual artifact; `flutter run --release`/a real release build
+      // is still what actually determines debug vs. release behavior.
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorSchemeSeed: CopilotColors.blue,
         useMaterial3: true,

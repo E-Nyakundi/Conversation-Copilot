@@ -1,0 +1,75 @@
+{
+  "_comment": "Phase B (2026-08-23) regression fixtures for ai/answer_format.py. Format mirrors conversation/fixtures/sample_transcripts.json's spirit (real/realistic sentences with an expected label) so this can be eyeballed and scored the same way with the sibling score_answer_format management command. 'expected' is one of code/prose/code_and_prose. All 14 cases below were verified against the actual classify() logic before being locked in here.",
+  "cases": [
+    {
+      "text": "Write a function in Python 3 called two_sum that returns indices of the two numbers that add up to a target.",
+      "expected": "code",
+      "note": "explicit build verb + language, unambiguous -- regression check"
+    },
+    {
+      "text": "Implement an LRU cache with O(1) get and put.",
+      "expected": "code",
+      "note": "build verb + DS/algo term -- regression check"
+    },
+    {
+      "text": "Reverse a linked list.",
+      "expected": "code",
+      "note": "algo command verb + DS/algo term -- regression check"
+    },
+    {
+      "text": "Can you show me the code for that rate limiter?",
+      "expected": "code",
+      "note": "explicit code request -- regression check"
+    },
+    {
+      "text": "What's your experience with our API design culture here?",
+      "expected": "prose",
+      "note": "Phase B bug (the actual real-world bug found here): 'design' in 'design culture' was read as the imperative build verb and paired with 'API' to force CODE, ahead of the clear 'what's your experience with' prose framing already in the sentence. Fixed by checking prose signals before the build-verb+language rule."
+    },
+    {
+      "text": "Have you used Django before, and what did you think of it?",
+      "expected": "prose",
+      "note": "Phase B fix: bare language mention + widened prose signal ('have you used') -> PROSE, not CODE"
+    },
+    {
+      "text": "How familiar are you with React?",
+      "expected": "prose",
+      "note": "Phase B fix: widened prose signal catches this"
+    },
+    {
+      "text": "Do you like working with Docker in production?",
+      "expected": "code_and_prose",
+      "note": "no widened-signal match on this exact phrasing -- bare language mention with no build verb now correctly falls to code_and_prose instead of a wrong confident CODE (previously misclassified as CODE)"
+    },
+    {
+      "text": "A real-time chat server using WebSockets with clean architecture.",
+      "expected": "code_and_prose",
+      "note": "bare language mention only, no build verb/DS-algo term -- previously CODE, now correctly ambiguous rather than a forced guess"
+    },
+    {
+      "text": "Design a distributed task queue with retries and monitoring.",
+      "expected": "code",
+      "note": "build verb + DS/algo-flavored term -- regression check, unrelated to Phase B change"
+    },
+    {
+      "text": "Tell me about a time you disagreed with a teammate.",
+      "expected": "prose",
+      "note": "explicit prose signal, no technical terms at all -- regression check"
+    },
+    {
+      "text": "What's your availability next week?",
+      "expected": "prose",
+      "note": "zero technical signal -- regression check"
+    },
+    {
+      "text": "How do you think about cache invalidation in a distributed system?",
+      "expected": "code_and_prose",
+      "note": "DS/algo term, no build verb, no prose signal -- regression check, still ambiguous by design"
+    },
+    {
+      "text": "Implement a collaborative document editor with OT or CRDTs.",
+      "expected": "code_and_prose",
+      "note": "build verb with no recognized language/DS-algo term -- regression check (bug fix already covered in build plan §8)"
+    }
+  ]
+}
