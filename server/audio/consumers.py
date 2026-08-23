@@ -545,14 +545,32 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             )
         )
 
-        # Phase 3: fire off (don't await) suggestion generation for each
-        # detected question. See the note on self._background_tasks in
-        # connect() for why this is a background task rather than inline.
-        for extraction_obj, item in zip(extraction_objs, found):
-            if item.type == intent_module.QUESTION:
-                task = asyncio.create_task(self._generate_suggestion(turn, extraction_obj))
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
+        # Phase 3: fire off (don't await) suggestion generation. See the
+        # note on self._background_tasks in connect() for why this is a
+        # background task rather than inline.
+        #
+        # Multi-question merge (2026-08-23): every `question`-type
+        # Extraction from THIS turn is grouped into one list and handed to
+        # a single _generate_suggestion call, instead of one independent
+        # task per Extraction row. See that method's docstring for the
+        # full rationale — the short version: conversation/intent.py
+        # splits a turn sentence-by-sentence, so a single utterance with
+        # several genuinely distinct sub-questions used to fire N siloed
+        # suggestion calls with zero shared awareness of each other. All N
+        # Extraction rows are still created individually above (bulk_create
+        # already ran) — only generation is merged. The common case (one
+        # question per turn, still the large majority per every session
+        # logged so far) produces a list of length 1 and behaves exactly
+        # as before.
+        question_extractions = [
+            extraction_obj
+            for extraction_obj, item in zip(extraction_objs, found)
+            if item.type == intent_module.QUESTION
+        ]
+        if question_extractions:
+            task = asyncio.create_task(self._generate_suggestion(turn, question_extractions))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
     async def _recent_turns_context(self, limit: int) -> list[dict]:
         """Last `limit` turns for this session, oldest first, as plain
@@ -586,10 +604,10 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
 
         return await asyncio.to_thread(_fetch)
 
-    async def _generate_suggestion(self, turn: Turn, extraction: Extraction):
+    async def _generate_suggestion(self, turn: Turn, extractions: list[Extraction]):
         """
-        Phase 3 (v4): single-shot suggestion for one detected question,
-        via the hybrid router — Groq first (ai.cloud_router), local LLM
+        Phase 3 (v4): suggestion generation for one detected question, via
+        the hybrid router — Groq first (ai.cloud_router), local LLM
         fallback. Runs as a background task (see connect()/
         _extract_and_emit) so it never blocks incoming audio frames on
         this connection. Best-effort: a missing/misconfigured Groq key
@@ -607,6 +625,31 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         minority of questions, not the default path; see
         ai/answer_format.py's docstring for why it's built to stay narrow.
 
+        Multi-question merge (2026-08-23, per real prod evidence — see
+        build plan): `extractions` is a LIST, not a single Extraction.
+        conversation/intent.py splits a turn sentence-by-sentence, so a
+        single utterance containing several genuinely distinct
+        sub-questions ("what stays serverless? what moves to dedicated
+        services? how do you handle auth, caching, ...?") used to produce
+        one Extraction row PER sentence and one independent, siloed
+        _generate_suggestion call per row — no call had any idea the
+        others existed, so answers could overlap, contradict, or read as
+        unrelated fragments of what a human would treat as one question.
+        _extract_and_emit now groups every `question`-type Extraction
+        from the same turn into a single list and this method builds ONE
+        combined prompt from all of them (see combined_question below) —
+        exactly one suggestion, addressing every part together, the way
+        a person actually answering would. All N Extraction rows are
+        still persisted individually (so /extractions/ and the admin
+        stay accurate per-sub-question) — only suggestion GENERATION is
+        merged, not extraction itself. The group's first Extraction is
+        used as the representative row for the Suggestion FK/WS payload
+        (Suggestion.extraction is nullable by design for exactly this
+        kind of one-to-many case — see models.py). The common single-
+        question case (len(extractions) == 1, still the large majority)
+        is unaffected: combined_question is just that one question's
+        text, byte-for-byte the same prompt as before this change.
+
         Diagnostic prints throughout (not just logger calls) are
         deliberate: this project has no LOGGING config in settings.py, so
         logger.info/debug calls have nowhere configured to go, and even
@@ -619,17 +662,36 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         from ai.answer_format import CODE, CODE_AND_PROSE, PROSE, classify
         from ai.cloud_router import get_suggestion
 
+        extraction = extractions[0]
+
+        # A single question stays exactly what it always was — no numbered
+        # list, no framing, byte-for-byte the same prompt this method sent
+        # before the multi-question merge existed. Only genuinely multiple
+        # sibling questions from the same turn get the numbered framing
+        # below, so the model treats them as parts of one ask rather than
+        # answering the first and ignoring the rest.
+        if len(extractions) == 1:
+            combined_question = extraction.text
+        else:
+            numbered = "\n".join(f"{i}. {e.text}" for i, e in enumerate(extractions, start=1))
+            combined_question = (
+                "The following were all asked together, as parts of one "
+                f"question:\n{numbered}\n\nAddress all parts together in one "
+                "coherent answer, not as separate unrelated answers."
+            )
+
         # Snapshot the level at the moment generation starts, not when it
         # finishes — if the client switches levels mid-generation, this
         # in-flight suggestion should still reflect what was asked for
         # when it kicked off, not whatever the level happens to be later.
         level = self.answer_level
 
-        answer_format = classify(extraction.text)
+        answer_format = classify(combined_question)
 
         print(
-            f"[suggest] extraction {extraction.id} ({extraction.text!r}): "
-            f"starting (level={level}, format={answer_format})",
+            f"[suggest] extraction {extraction.id} ({combined_question!r}): "
+            f"starting (level={level}, format={answer_format}, "
+            f"merged={len(extractions)})",
             flush=True,
         )
 
@@ -648,7 +710,15 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         # spread across several prior turns before the ask itself lands
         # (see Ed's real screenshots: language, then constraints, then
         # the actual "implement X" turn).
-        if extraction.subtype == "imperative" or answer_format in (CODE, CODE_AND_PROSE):
+        #
+        # Multi-question merge (2026-08-23): checked across the WHOLE
+        # group, not just extractions[0] — the representative extraction
+        # used for FK/id purposes elsewhere in this method isn't
+        # necessarily the one that happened to match the imperative
+        # pattern. A group where sub-question #2 or #3 is imperative-
+        # shaped still needs the wider window even if #1 wasn't.
+        any_imperative = any(e.subtype == "imperative" for e in extractions)
+        if any_imperative or answer_format in (CODE, CODE_AND_PROSE):
             context_limit = int(
                 os.environ.get("SUGGESTION_CONTEXT_TURNS_IMPERATIVE", "12")
             )
@@ -664,8 +734,8 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                 # for it serially. Each is wrapped in to_thread since
                 # get_suggestion is a blocking call.
                 code_result, prose_result = await asyncio.gather(
-                    asyncio.to_thread(get_suggestion, extraction.text, context_turns, level, CODE),
-                    asyncio.to_thread(get_suggestion, extraction.text, context_turns, level, PROSE),
+                    asyncio.to_thread(get_suggestion, combined_question, context_turns, level, CODE),
+                    asyncio.to_thread(get_suggestion, combined_question, context_turns, level, PROSE),
                     return_exceptions=True,
                 )
                 # Either half can fail independently (a Groq hiccup on
@@ -699,7 +769,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                     secondary_text = None
             else:
                 result = await asyncio.to_thread(
-                    get_suggestion, extraction.text, context_turns, level, answer_format
+                    get_suggestion, combined_question, context_turns, level, answer_format
                 )
                 secondary_text = None
         except asyncio.CancelledError:
@@ -724,7 +794,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             session=self.session,
             turn=turn,
             extraction=extraction,
-            question_text=extraction.text,
+            question_text=combined_question,
             answer_text=result["text"],
             answer_format=answer_format,
             secondary_answer_text=secondary_text,
@@ -741,7 +811,19 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                         "suggestion_id": str(suggestion.id),
                         "turn_id": str(turn.id),
                         "extraction_id": extraction.id,
-                        "question": extraction.text,
+                        # Multi-question merge (2026-08-23): the full set of
+                        # Extraction ids this one suggestion actually
+                        # answers — extraction_id above stays the single
+                        # representative row (existing clients that only
+                        # read extraction_id keep working unchanged), this
+                        # is additive so anything that cares which
+                        # sub-questions got merged (a future UI grouping
+                        # view, /extractions/ cross-referencing) doesn't
+                        # have to guess from turn_id alone. Always present,
+                        # even for the common single-question case, so the
+                        # shape is consistent rather than conditional.
+                        "extraction_ids": [e.id for e in extractions],
+                        "question": combined_question,
                         "answer": result["text"],
                         "answer_format": answer_format,
                         # Populated only for code_and_prose: the companion
@@ -762,7 +844,17 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                         # plan (Phase 7 notes) explicitly defers that until
                         # it can be paired with a cheaper proxy signal
                         # rather than trusted alone.
-                        "extraction_confidence": extraction.confidence,
+                        #
+                        # Multi-question merge (2026-08-23): the MIN across
+                        # the whole group, not just the representative
+                        # extraction's own value — a merged suggestion is
+                        # only as trustworthy as its weakest-confidence
+                        # sub-question; taking the max or the first would
+                        # silently hide that one part of the merged answer
+                        # was a shakier extraction than the others.
+                        "extraction_confidence": min(e.confidence for e in extractions if e.confidence is not None)
+                        if any(e.confidence is not None for e in extractions)
+                        else None,
                     }
                 )
             )

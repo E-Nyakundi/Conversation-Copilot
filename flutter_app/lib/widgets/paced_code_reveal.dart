@@ -49,9 +49,14 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 
-/// Estimated read time for prose (used by the interrupting text overlay,
-/// not the code-typing path below) — "how long does a human need to
-/// read this", tuned for reading rather than hand-typing.
+/// Estimated read time for prose — "how long does a human need to read
+/// this", tuned for reading rather than hand-typing.
+///
+/// Currently unused (2026-08-23): its one caller, the interrupting text
+/// overlay, was removed the same day — see live_session_screen.dart's
+/// _addSuggestionEntry for why. Left in place rather than deleted: it's
+/// small, self-contained, and genuinely reusable for any future "how
+/// long should this stay on screen" need, not overlay-specific logic.
 class ReadPacing {
   static const double msPerWord = 260.0; // ~230 wpm, a bit under average adult silent-reading speed, biased slow on purpose
   static const Duration floor = Duration(milliseconds: 1200);

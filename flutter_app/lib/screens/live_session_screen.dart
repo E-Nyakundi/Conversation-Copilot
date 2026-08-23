@@ -6,7 +6,6 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../audio/capture.dart';
 import '../theme.dart';
 import '../widgets/paced_code_reveal.dart';
-import '../widgets/paced_text_overlay.dart';
 import '../ws/socket.dart';
 
 /// Phase 1: the Flutter equivalent of server/audio_test.html — mic capture
@@ -114,23 +113,21 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
   // orchestration. Every code-format suggestion gets its own controller
   // (created lazily via _controllerFor) so its card always renders
   // through PacedCodeReveal; `_activeCodeEntry` tracks whichever one is
-  // the current "being copied right now" card for queueing/overlay
-  // decisions — the most recently shown code card that hasn't finished
-  // or been manually paused yet.
+  // the current "being copied right now" card for queueing decisions —
+  // the most recently shown code card that hasn't finished or been
+  // manually paused yet.
+  //
+  // Renamed from _pendingCodeSuggestions (2026-08-23): the interrupting
+  // text overlay this queue used to sit alongside was removed the same
+  // day (see _addSuggestionEntry) — it was built on a mistaken read of
+  // a VAD-chunking bug that Phase C's completion_heuristic.py (§14) now
+  // fixes at the source, so what was left was mostly genuinely separate
+  // questions where interrupting a code card mid-copy was just noise.
+  // Text suggestions now queue exactly like code ones always did, so
+  // this single list (and its "N new suggestions" flush UI) covers both.
   final Map<_TranscriptEntry, PacedCodeRevealController> _codeControllers = {};
   _TranscriptEntry? _activeCodeEntry;
-  final List<_TranscriptEntry> _pendingCodeSuggestions = [];
-
-  // Phase 4 §11b "open/parked" item, resolved 2026-08-23: a second text
-  // overlay arriving while one is already showing is QUEUED, not
-  // stacked or interrupted — per the design record's own stated
-  // decision, which the first implementation (§12b) left as a plain
-  // nullable String that a second arrival simply overwrote. Front of
-  // the queue is "currently showing"; `_overlayText` below stays as a
-  // read-only convenience getter so the render-path code and its
-  // existing null checks didn't need to change shape.
-  final List<String> _overlayQueue = [];
-  String? get _overlayText => _overlayQueue.isEmpty ? null : _overlayQueue.first;
+  final List<_TranscriptEntry> _pendingSuggestions = [];
 
   StreamSubscription? _msgSub;
   StreamSubscription? _errSub;
@@ -189,36 +186,28 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
     return controller != null && !controller.isFinished && !controller.manuallyOverridden;
   }
 
-  /// Phase 4 §11b orchestration for a freshly-arrived suggestion:
-  /// - a CODE suggestion arriving while another is still being actively
-  ///   copied is held silently in `_pendingCodeSuggestions` (quiet "N
-  ///   new" indicator instead of interrupting);
-  /// - a TEXT suggestion arriving in that same situation is shown
-  ///   immediately as a semi-transparent overlay on top of the active
-  ///   code card, and that card's timer is paused for a duration matched
-  ///   to the overlay's own estimated read time (see ReadPacing);
-  /// - otherwise (nothing currently active), it's just appended and, if
-  ///   it's a code suggestion, becomes the new active card.
+  /// Design change (2026-08-23): the interrupting-overlay behavior for
+  /// text suggestions is REMOVED. It was originally built (§11b) on a
+  /// mistaken read of a VAD-chunking bug — a single continuous
+  /// interviewer utterance was sometimes finalized as two separate
+  /// turns, which looked like "a second question arrived while
+  /// answering the first" and the overlay was meant to let the person
+  /// quickly clear the (apparent) second question and get back to the
+  /// first. Phase C's completion_heuristic.py (§14) fixes that
+  /// fragmentation at the source, so the scenario the overlay existed
+  /// for is now rare — what's left is mostly genuinely separate,
+  /// rapid-fire questions, where interrupting the code card the person
+  /// is actively hand-typing from is just noise, not help (confirmed
+  /// on-device: it was firing mid-copy on an unrelated question).
+  /// Text suggestions now behave exactly like code ones already did:
+  /// if a code card is actively being paced, hold the new suggestion
+  /// silently and surface it the same way as any other queued item —
+  /// no pause, no paint-on-top-of-what's-being-copied.
   void _addSuggestionEntry(_TranscriptEntry entry) {
     final isCodeEntry = entry.answerFormat == 'code' || entry.answerFormat == 'code_and_prose';
 
-    if (isCodeEntry && _activeCodeStillPacing) {
-      _pendingCodeSuggestions.add(entry);
-      return;
-    }
-
-    if (!isCodeEntry && _activeCodeStillPacing) {
-      _entries.add(entry);
-      final wasShowingOne = _overlayQueue.isNotEmpty;
-      _overlayQueue.add(entry.text);
-      // Only (re)start the pause if nothing was already showing — an
-      // overlay already on screen keeps running its own timer un-
-      // touched; queueing behind it must never extend or restart that
-      // pause, or a burst of text suggestions would hold the code card
-      // hostage far longer than any one overlay's own read time.
-      if (!wasShowingOne) {
-        _controllerFor(_activeCodeEntry!).pauseForOverlay(ReadPacing.forText(entry.text));
-      }
+    if (_activeCodeStillPacing) {
+      _pendingSuggestions.add(entry);
       return;
     }
 
@@ -229,34 +218,25 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
     }
   }
 
-  /// Called when the current overlay's own read-time timer fires
-  /// (`PacedTextOverlay.onDismiss`). Pops the front of the queue; if
-  /// another text suggestion queued up behind it, that one now becomes
-  /// current and gets its OWN proportional pause on the code
-  /// controller — the just-finished overlay's pause has already been
-  /// running out this whole time, so the next one needs a fresh pause
-  /// sized to its own text, not a leftover from the first.
-  void _dismissOverlay() {
-    setState(() {
-      if (_overlayQueue.isNotEmpty) _overlayQueue.removeAt(0);
-      if (_overlayQueue.isNotEmpty && _activeCodeEntry != null) {
-        _controllerFor(_activeCodeEntry!)
-            .pauseForOverlay(ReadPacing.forText(_overlayQueue.first));
-      }
-    });
-  }
-
   /// The one deliberate touch exception on the "pending" side, same as
   /// the paced-reveal widget's own "tap to resume" affordance — a single
   /// tap on the "N new suggestion(s)" chip, not continuous interaction.
-  void _flushPendingCodeSuggestions() {
+  void _flushPendingSuggestions() {
     setState(() {
-      for (final entry in _pendingCodeSuggestions) {
+      for (final entry in _pendingSuggestions) {
         _entries.add(entry);
-        _controllerFor(entry);
-        _activeCodeEntry = entry;
+        // Design change (2026-08-23): this list can now hold text
+        // entries too (see _addSuggestionEntry above), so only code
+        // entries get a PacedCodeRevealController / become the new
+        // "active" card — a queued text suggestion just renders
+        // normally, same as it always did outside a pacing session.
+        final isCodeEntry = entry.answerFormat == 'code' || entry.answerFormat == 'code_and_prose';
+        if (isCodeEntry) {
+          _controllerFor(entry);
+          _activeCodeEntry = entry;
+        }
       }
-      _pendingCodeSuggestions.clear();
+      _pendingSuggestions.clear();
     });
     _scrollToEnd();
   }
@@ -550,10 +530,8 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
                             controller: _scrollController,
                             controllerFor: _controllerFor,
                             activeCodeEntry: _activeCodeEntry,
-                            overlayText: _overlayText,
-                            onDismissOverlay: _dismissOverlay,
-                            pendingCount: _pendingCodeSuggestions.length,
-                            onFlushPending: _flushPendingCodeSuggestions,
+                            pendingCount: _pendingSuggestions.length,
+                            onFlushPending: _flushPendingSuggestions,
                           ),
                         ],
                       ),
@@ -693,8 +671,6 @@ class _EntriesView extends StatelessWidget {
     required this.controller,
     required this.controllerFor,
     required this.activeCodeEntry,
-    required this.overlayText,
-    required this.onDismissOverlay,
     required this.pendingCount,
     required this.onFlushPending,
   });
@@ -708,8 +684,6 @@ class _EntriesView extends StatelessWidget {
   // here as plain callbacks/values.
   final PacedCodeRevealController Function(_TranscriptEntry) controllerFor;
   final _TranscriptEntry? activeCodeEntry;
-  final String? overlayText;
-  final VoidCallback onDismissOverlay;
   final int pendingCount;
   final VoidCallback onFlushPending;
 
@@ -775,9 +749,7 @@ class _EntriesView extends StatelessWidget {
             : entry.answerFormat == 'code_and_prose'
                 ? 'Suggested code (+ spoken alternative below)'
                 : 'Suggested answer';
-        return Stack(
-          children: [
-            Container(
+        return Container(
           margin: const EdgeInsets.only(bottom: 16),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           decoration: const BoxDecoration(
@@ -875,18 +847,6 @@ class _EntriesView extends StatelessWidget {
               ),
             ],
           ),
-            ),
-            // Phase 4 §11b: the interrupting text-suggestion overlay only
-            // ever targets whichever code card is currently "active" —
-            // rendered here, inside that specific card's Stack, so it
-            // visually sits directly on top of the card being copied
-            // rather than anywhere else on screen.
-            if (isCode && entry == activeCodeEntry && overlayText != null)
-              PacedTextOverlay(
-                text: overlayText!,
-                onDismiss: onDismissOverlay,
-              ),
-          ],
         );
       },
           ),
