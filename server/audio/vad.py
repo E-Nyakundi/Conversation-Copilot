@@ -90,3 +90,16 @@ def is_speech(frame: np.ndarray, threshold: float | None = None) -> bool:
         os.environ.get("VAD_THRESHOLD", "0.5")
     )
     return get_vad().speech_prob(frame) >= threshold
+
+
+def speech_prob(frame: np.ndarray) -> float:
+    """
+    Phase C (2026-08-23): thin passthrough so callers that need the raw
+    probability (not just the thresholded bool from is_speech()) don't
+    have to reach into get_vad() directly. Added for
+    consumers.py's adaptive-silence heuristic — see that module's
+    _process_frame for how this is used alongside RMS-decay to judge
+    whether a pause looks like a real sentence end or a mid-thought
+    breath, rather than treating every silence identically.
+    """
+    return get_vad().speech_prob(frame)

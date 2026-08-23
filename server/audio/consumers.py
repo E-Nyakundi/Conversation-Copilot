@@ -14,6 +14,7 @@ from conversation.models import Extraction, Session, Suggestion, Turn
 
 from . import speaker as speaker_module
 from . import vad as vad_module
+from . import completion_heuristic as completion_module
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,15 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
     """
 
     # Config (env-overridable — see server/.env.example)
-    SILENCE_S = float(os.environ.get("VAD_SILENCE_MS", "600")) / 1000.0
+    #
+    # Phase C (2026-08-23): the old fixed SILENCE_S class attribute is
+    # removed. Finalization now uses completion_heuristic.py's adaptive
+    # threshold (MIN_SILENCE_S floor + a bounded, completion-score-based
+    # extension) instead of a single constant read once at class-body
+    # eval time — see _process_frame. VAD_SILENCE_MS still controls the
+    # floor (default raised 600 -> 1000ms per Ed's decision), just via
+    # completion_heuristic.MIN_SILENCE_S rather than a class attribute
+    # here.
     MIN_SEGMENT_S = float(os.environ.get("MIN_SEGMENT_MS", "250")) / 1000.0
 
     # Removed: PARTIAL_INTERVAL_S / PARTIAL_WINDOW_S + the "partial"
@@ -121,6 +130,13 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         self.segment_gap_s = 0.0
         self.silence_tail_s = 0.0
         self.gap_since_last_turn_s = 0.0
+        # Phase C (2026-08-23): tracks the trailing completion signal for
+        # the in-progress segment's silence — see
+        # audio/completion_heuristic.py. Recreated each time a new
+        # segment starts (see _process_frame), read while waiting out the
+        # silence tail to decide whether this particular pause justifies
+        # finalizing near the floor or should be given more time.
+        self.completion_tracker = completion_module.CompletionTracker()
         self.speaker_labeler = speaker_module.NaivePauseSpeakerLabeler()
         # Phase 1 revisit (2026-08-14): session-persistent speaker
         # identity — see audio/speaker.py's module docstring. One
@@ -240,7 +256,13 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             await self._process_frame(frame_f32)
 
     async def _process_frame(self, frame_f32: np.ndarray):
-        is_speech = await asyncio.to_thread(vad_module.is_speech, frame_f32)
+        # Phase C (2026-08-23): need the raw probability now, not just
+        # the thresholded bool — is_speech's own threshold check still
+        # decides speech-vs-silence exactly as before, but the raw value
+        # also feeds the completion tracker below.
+        prob = await asyncio.to_thread(vad_module.speech_prob, frame_f32)
+        vad_threshold = float(os.environ.get("VAD_THRESHOLD", "0.5"))
+        is_speech = prob >= vad_threshold
 
         if is_speech:
             if not self.speech_active:
@@ -248,14 +270,30 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                 self.segment_frames = []
                 self.segment_start_wall = timezone.now()
                 self.segment_gap_s = self.gap_since_last_turn_s
+                # Fresh tracker for this new segment — a previous
+                # segment's trailing trend has no bearing on this one.
+                self.completion_tracker = completion_module.CompletionTracker()
 
             self.segment_frames.append(frame_f32)
+            self.completion_tracker.add_frame(frame_f32, prob)
             self.silence_tail_s = 0.0
         else:
             if self.speech_active:
                 self.segment_frames.append(frame_f32)
+                self.completion_tracker.add_frame(frame_f32, prob)
                 self.silence_tail_s += FRAME_DURATION_S
-                if self.silence_tail_s >= self.SILENCE_S:
+                # Phase C: the fixed SILENCE_S threshold is replaced by
+                # an adaptive one — completion_tracker blends the raised
+                # floor (MIN_SILENCE_S, default 1000ms) with how much the
+                # trailing audio actually looks like a real stopping
+                # point (RMS + speech-prob decay) versus a mid-thought
+                # pause, up to a bounded extension so an ambiguous tail
+                # still finalizes eventually rather than hanging. See
+                # audio/completion_heuristic.py's module docstring for
+                # the full reasoning and the honest not-yet-validated
+                # caveat on the decay-score weighting itself.
+                effective_threshold = self.completion_tracker.effective_silence_threshold()
+                if self.silence_tail_s >= effective_threshold:
                     await self._finalize_segment()
             else:
                 self.gap_since_last_turn_s += FRAME_DURATION_S
@@ -268,8 +306,10 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             return
 
         # Trim the silence tail that was accumulated while waiting for
-        # SILENCE_S to elapse — feeding trailing silence to Whisper degrades
-        # accuracy and adds unnecessary latency.
+        # the effective (now adaptive, Phase C) threshold to elapse —
+        # feeding trailing silence to Whisper degrades accuracy and adds
+        # unnecessary latency. self.silence_tail_s reflects real elapsed
+        # silence regardless of what threshold triggered finalization.
         silence_frames = round(self.silence_tail_s / FRAME_DURATION_S)
         speech_frames = self.segment_frames[:-silence_frames] if silence_frames else self.segment_frames
         audio_np = np.concatenate(speech_frames) if speech_frames else np.concatenate(self.segment_frames)
