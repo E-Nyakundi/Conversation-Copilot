@@ -261,7 +261,7 @@ class PacedCodeReveal extends StatefulWidget {
     super.key,
     required this.code,
     required this.controller,
-    this.viewportHeight = 252, // was 210 — bumped ~20% for readability
+    this.viewportHeight = 252, // was 210 in §13's original write-up — bumped ~20% for readability; see §14
   });
 
   final String code;

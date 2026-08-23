@@ -120,7 +120,17 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
   final Map<_TranscriptEntry, PacedCodeRevealController> _codeControllers = {};
   _TranscriptEntry? _activeCodeEntry;
   final List<_TranscriptEntry> _pendingCodeSuggestions = [];
-  String? _overlayText;
+
+  // Phase 4 §11b "open/parked" item, resolved 2026-08-23: a second text
+  // overlay arriving while one is already showing is QUEUED, not
+  // stacked or interrupted — per the design record's own stated
+  // decision, which the first implementation (§12b) left as a plain
+  // nullable String that a second arrival simply overwrote. Front of
+  // the queue is "currently showing"; `_overlayText` below stays as a
+  // read-only convenience getter so the render-path code and its
+  // existing null checks didn't need to change shape.
+  final List<String> _overlayQueue = [];
+  String? get _overlayText => _overlayQueue.isEmpty ? null : _overlayQueue.first;
 
   StreamSubscription? _msgSub;
   StreamSubscription? _errSub;
@@ -199,8 +209,16 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
 
     if (!isCodeEntry && _activeCodeStillPacing) {
       _entries.add(entry);
-      _overlayText = entry.text;
-      _controllerFor(_activeCodeEntry!).pauseForOverlay(ReadPacing.forText(entry.text));
+      final wasShowingOne = _overlayQueue.isNotEmpty;
+      _overlayQueue.add(entry.text);
+      // Only (re)start the pause if nothing was already showing — an
+      // overlay already on screen keeps running its own timer un-
+      // touched; queueing behind it must never extend or restart that
+      // pause, or a burst of text suggestions would hold the code card
+      // hostage far longer than any one overlay's own read time.
+      if (!wasShowingOne) {
+        _controllerFor(_activeCodeEntry!).pauseForOverlay(ReadPacing.forText(entry.text));
+      }
       return;
     }
 
@@ -211,8 +229,21 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
     }
   }
 
+  /// Called when the current overlay's own read-time timer fires
+  /// (`PacedTextOverlay.onDismiss`). Pops the front of the queue; if
+  /// another text suggestion queued up behind it, that one now becomes
+  /// current and gets its OWN proportional pause on the code
+  /// controller — the just-finished overlay's pause has already been
+  /// running out this whole time, so the next one needs a fresh pause
+  /// sized to its own text, not a leftover from the first.
   void _dismissOverlay() {
-    setState(() => _overlayText = null);
+    setState(() {
+      if (_overlayQueue.isNotEmpty) _overlayQueue.removeAt(0);
+      if (_overlayQueue.isNotEmpty && _activeCodeEntry != null) {
+        _controllerFor(_activeCodeEntry!)
+            .pauseForOverlay(ReadPacing.forText(_overlayQueue.first));
+      }
+    });
   }
 
   /// The one deliberate touch exception on the "pending" side, same as
