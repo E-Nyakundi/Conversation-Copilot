@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Extraction, Session, Suggestion, Turn
+from .models import Extraction, Session, Suggestion, Turn, UserProfile
 
 
 class TurnInline(admin.TabularInline):
@@ -46,3 +46,11 @@ class ExtractionAdmin(admin.ModelAdmin):
 class SuggestionAdmin(admin.ModelAdmin):
     list_display = ("session", "question_text", "answer_text", "model_used", "latency_ms", "created_at")
     list_filter = ("model_used",)
+
+
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+    # Phase 5 (2026-08-24): singleton — list_display exists mainly so the
+    # admin's change-list still renders something sensible if navigated to
+    # directly, but there is exactly one row to ever click into.
+    list_display = ("name", "role", "updated_at")

@@ -22,13 +22,12 @@ import os
 import threading
 
 from ai.prompts import (
-    CODE_SYSTEM_PROMPT,
     DEFAULT_ANSWER_LEVEL,
-    SUGGESTION_SYSTEM_PROMPT,
     build_code_prompt,
     build_suggestion_prompt,
     get_code_max_tokens,
     get_max_tokens,
+    get_system_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,13 +76,18 @@ class LocalLLM:
         Returns {"text": str, "model": str}.
         """
         if answer_format == "code":
-            system_prompt = CODE_SYSTEM_PROMPT
             max_tokens = get_code_max_tokens(level)
             user_prompt = build_code_prompt(question, context_turns, level)
         else:
-            system_prompt = SUGGESTION_SYSTEM_PROMPT
             max_tokens = get_max_tokens(level)
             user_prompt = build_suggestion_prompt(question, context_turns, level)
+        # 2026-08-24: get_system_prompt() prepends first-person identity
+        # context from UserProfile when one is populated (see ai/prompts.py).
+        # Without this, a Groq outage falling back to this local path would
+        # silently drop identity context even though cloud_router.py's
+        # primary path includes it — same bug class as answer_format's
+        # original "don't let the fallback silently regress" rule.
+        system_prompt = get_system_prompt(answer_format)
 
         temperature = float(os.environ.get("LLM_TEMPERATURE", "0.4"))
 

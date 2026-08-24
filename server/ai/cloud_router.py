@@ -34,13 +34,12 @@ import os
 import threading
 
 from ai.prompts import (
-    CODE_SYSTEM_PROMPT,
     DEFAULT_ANSWER_LEVEL,
-    SUGGESTION_SYSTEM_PROMPT,
     build_code_prompt,
     build_suggestion_prompt,
     get_code_max_tokens,
     get_max_tokens,
+    get_system_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,10 +72,10 @@ def _suggest_via_groq(
     shape ai.local_llm.LocalLLM.suggest_answer() returns.
 
     answer_format (2026-08-16): "prose" (default, unchanged behavior) or
-    "code" — selects CODE_SYSTEM_PROMPT/build_code_prompt and a much
-    larger token budget instead of SUGGESTION_SYSTEM_PROMPT's spoken-
-    brevity path. See ai/answer_format.py for how a question gets routed
-    to one or the other.
+    "code" — selects the code-tuned system prompt/build_code_prompt and a
+    much larger token budget instead of the prose prompt's spoken-brevity
+    path (see ai/prompts.py:get_system_prompt). See ai/answer_format.py
+    for how a question gets routed to one or the other.
     """
     from groq import APIConnectionError, APIError, APITimeoutError, RateLimitError
 
@@ -89,13 +88,17 @@ def _suggest_via_groq(
     temperature = float(os.environ.get("LLM_TEMPERATURE", "0.4"))
 
     if answer_format == "code":
-        system_prompt = CODE_SYSTEM_PROMPT
         max_tokens = get_code_max_tokens(level)
         user_prompt = build_code_prompt(question, context_turns, level)
     else:
-        system_prompt = SUGGESTION_SYSTEM_PROMPT
         max_tokens = get_max_tokens(level)
         user_prompt = build_suggestion_prompt(question, context_turns, level)
+    # 2026-08-24: get_system_prompt() prepends first-person identity
+    # context from UserProfile when one is populated — see that
+    # function's docstring in ai/prompts.py. Byte-identical to the old
+    # CODE_SYSTEM_PROMPT/SUGGESTION_SYSTEM_PROMPT selection when no
+    # profile exists yet.
+    system_prompt = get_system_prompt(answer_format)
 
     try:
         response = client.chat.completions.create(

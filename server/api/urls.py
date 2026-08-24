@@ -16,4 +16,5 @@ urlpatterns = [
         name="session-suggestions",
     ),
     path("sessions/<str:session_id>/end/", rest_views.session_end_view, name="session-end"),
+    path("profile/", rest_views.user_profile_view, name="user-profile"),
 ]

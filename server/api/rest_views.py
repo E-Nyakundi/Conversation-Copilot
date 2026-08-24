@@ -5,7 +5,17 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from conversation.models import Extraction, Session, Suggestion, Turn
+from conversation.models import Extraction, Session, Suggestion, Turn, UserProfile
+
+
+def _profile_summary(profile: UserProfile) -> dict:
+    return {
+        "name": profile.name,
+        "role": profile.role,
+        "bio": profile.bio,
+        "is_populated": profile.is_populated(),
+        "updated_at": profile.updated_at.isoformat(),
+    }
 
 
 def _session_summary(session: Session) -> dict:
@@ -153,3 +163,49 @@ def session_end_view(request, session_id):
         session.save(update_fields=["ended_at"])
 
     return JsonResponse(_session_summary(session))
+
+
+@require_http_methods(["GET", "PUT"])
+@csrf_exempt
+def user_profile_view(request):
+    """
+    Phase 5 (2026-08-24): the app's single primary-user identity profile
+    (see UserProfile's own docstring in conversation/models.py for the
+    full rationale — singleton, no login system, first-pass Settings-
+    screen capture only).
+
+    GET /api/profile/ -> current profile (name/role/bio, always 200 even
+                          if never set — an empty/unpopulated profile is a
+                          normal state, not a 404).
+    PUT /api/profile/ -> update the profile. body: {"name": "...",
+                          "role": "...", "bio": "..."} — any subset;
+                          fields not present in the body are left
+                          unchanged (so a client editing just the bio
+                          field doesn't need to resend name/role too).
+    """
+    profile = UserProfile.get_solo()
+
+    if request.method == "GET":
+        return JsonResponse(_profile_summary(profile))
+
+    try:
+        body = json.loads(request.body or "{}")
+    except ValueError:
+        return JsonResponse({"error": "invalid JSON body"}, status=400)
+
+    if not isinstance(body, dict):
+        return JsonResponse({"error": "body must be a JSON object"}, status=400)
+
+    changed_fields = []
+    for field in ("name", "role", "bio"):
+        if field in body:
+            value = body[field]
+            if not isinstance(value, str):
+                return JsonResponse({"error": f"{field} must be a string"}, status=400)
+            setattr(profile, field, value)
+            changed_fields.append(field)
+
+    if changed_fields:
+        profile.save()
+
+    return JsonResponse(_profile_summary(profile))

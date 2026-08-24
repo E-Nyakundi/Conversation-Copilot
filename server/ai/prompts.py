@@ -93,6 +93,85 @@ def normalize_level(level):
     return level if level in ANSWER_LEVELS else DEFAULT_ANSWER_LEVEL
 
 
+def build_identity_context(name: str, role: str, bio: str) -> str:
+    """
+    Phase 5 (2026-08-24): turns a UserProfile's fields into a first-person
+    identity instruction, prepended to whichever system prompt
+    (SUGGESTION_SYSTEM_PROMPT or CODE_SYSTEM_PROMPT) is in use for this
+    request. Caller (audio/consumers.py, via get_system_prompt below) is
+    responsible for only calling this when UserProfile.is_populated() is
+    true — an empty profile should mean zero prompt change from before
+    this feature existed, not an instruction built from three empty
+    strings.
+
+    Kept as a standalone function returning plain text, not a method on
+    UserProfile itself — this file already owns every other piece of
+    prompt-construction logic (ANSWER_LEVELS, build_suggestion_prompt,
+    build_code_prompt), so identity phrasing lives alongside it rather
+    than splitting prompt-authoring across two files. conversation/
+    models.py stays a pure data model with no prompt-engineering
+    concerns baked in.
+
+    Deliberately built from whichever of name/role/bio are actually
+    non-empty, not a fixed three-blank template — a user who only filled
+    in "role" shouldn't get "Your name is . " in the prompt.
+    """
+    parts = []
+    if name.strip():
+        parts.append(f"Your name is {name.strip()}.")
+    if role.strip():
+        parts.append(f"You are a {role.strip()}.")
+    if bio.strip():
+        parts.append(bio.strip())
+
+    if not parts:
+        return ""
+
+    identity_block = " ".join(parts)
+    return (
+        f"{identity_block} When answering, respond AS this person, in "
+        "first person — the suggested answer is what THEY would say about "
+        "themselves, not a description of them. "
+    )
+
+
+def get_system_prompt(answer_format: str = "prose") -> str:
+    """
+    Selects CODE_SYSTEM_PROMPT or SUGGESTION_SYSTEM_PROMPT for
+    answer_format, then prepends identity context from UserProfile if one
+    is populated (see build_identity_context above and UserProfile's
+    docstring in conversation/models.py for the full rationale).
+
+    Added 2026-08-24 as the single place both ai/cloud_router.py and
+    ai/local_llm.py select their system prompt from — previously each
+    duplicated the same `if answer_format == "code": ... else: ...`
+    selection independently; consolidating here means identity injection
+    only had to be written once, and future prompt changes (Phase 9's
+    domain modes, per that module's own module docstring) don't risk the
+    two call sites drifting out of sync with each other.
+
+    A profile-lookup failure (e.g. the migration hasn't run yet on an
+    older deployment) degrades to no identity context rather than
+    breaking suggestion generation entirely — the whole point of a
+    silently-optional feature is that its absence shouldn't be able to
+    take anything else down.
+    """
+    base_prompt = CODE_SYSTEM_PROMPT if answer_format == "code" else SUGGESTION_SYSTEM_PROMPT
+
+    try:
+        from conversation.models import UserProfile
+
+        profile = UserProfile.get_solo()
+        if profile.is_populated():
+            identity = build_identity_context(profile.name, profile.role, profile.bio)
+            if identity:
+                return identity + base_prompt
+    except Exception:
+        logger.warning("Failed to load UserProfile for identity context", exc_info=True)
+
+    return base_prompt
+
+
 def get_max_tokens(level):
     """
     Per-level token budget, overridable via env as

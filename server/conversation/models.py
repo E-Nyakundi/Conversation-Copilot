@@ -3,6 +3,75 @@ import uuid
 from django.db import models
 
 
+class UserProfile(models.Model):
+    """
+    Phase 5 (2026-08-24): the app's primary-user identity — who the app is
+    representing when it suggests an answer. Ed's framing: the app isn't a
+    neutral assistant, it's meant to answer AS the user, in first person
+    ("tell us about yourself" should come back as the user's own
+    background, not a generic third-person description). Injected into
+    ai/prompts.py's suggestion prompt as fixed context once populated.
+
+    Deliberately a singleton, not a per-request-user table — this app has
+    no login/account system (see the build plan's Phase 3.5 "no login for
+    v1" decision) and is architected as one deployment, one user. Enforced
+    via a fixed primary key (`id=1` always) rather than a real uniqueness
+    constraint on some other field, since there's no natural unique field
+    to constrain on for a single free-form profile.
+
+    First-pass capture method (2026-08-24 decision): a Settings screen
+    text-entry section, not the conversational-interview or document-
+    upload flows Ed also described — those remain real future work, not
+    dropped, just not this pass's scope (see the build plan entry for the
+    full reasoning).
+    """
+
+    SINGLETON_ID = 1
+
+    id = models.IntegerField(primary_key=True, default=SINGLETON_ID, editable=False)
+
+    name = models.CharField(max_length=150, blank=True)
+    role = models.CharField(
+        max_length=150,
+        blank=True,
+        help_text="Job title / role / field, e.g. 'Backend engineer' or 'Sales rep'.",
+    )
+    # Free-text: career background, personality, whatever the user wants
+    # the model to know about them when answering as them. No structure
+    # imposed beyond name/role — deliberately open per the 2026-08-24
+    # decision to keep the first pass simple.
+    bio = models.TextField(
+        blank=True,
+        help_text="Free-text background, personality, career details — "
+        "whatever should inform answers given as this person.",
+    )
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        # Enforce the singleton: always write to the same row regardless
+        # of what's passed in, so there's exactly one UserProfile ever.
+        self.pk = self.SINGLETON_ID
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get_solo(cls) -> "UserProfile":
+        """Fetch the singleton row, creating an empty one on first access."""
+        obj, _created = cls.objects.get_or_create(pk=cls.SINGLETON_ID)
+        return obj
+
+    def is_populated(self) -> bool:
+        """
+        Whether there's enough here to actually inject into a suggestion
+        prompt. An empty/never-touched profile should behave exactly like
+        no profile at all, not inject a blank "You are ." context block.
+        """
+        return bool(self.name.strip() or self.role.strip() or self.bio.strip())
+
+    def __str__(self):
+        return self.name or "(unnamed user profile)"
+
+
 class Session(models.Model):
     """
     A single live-listening session (one WebSocket connection's worth of
