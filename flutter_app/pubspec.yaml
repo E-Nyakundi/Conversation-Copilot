@@ -38,6 +38,7 @@ dependencies:
   record: ^7.1.1
   wakelock_plus: ^1.2.8
   shared_preferences: ^2.3.3
+  http: ^1.2.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

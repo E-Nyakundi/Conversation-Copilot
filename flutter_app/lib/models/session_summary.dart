@@ -1,10 +1,12 @@
 /// Lightweight session-history record used to drive Home's "Recent
-/// Sessions" list, the Session History screen, and Session Detail. This is
-/// in-memory/mock data for now — there is no persistence layer or backend
-/// endpoint yet for past-session listing (AudioStreamConsumer only handles
-/// the live WS protocol). Wiring this to real stored sessions is follow-up
-/// work once that API exists; the screens themselves are the deliverable
-/// here.
+/// Sessions" list, the Session History screen, and Session Detail.
+///
+/// Real data as of 2026-08-24 — see data/session_repository.dart, which
+/// builds these from the server's REST API (api/rest_views.py) instead of
+/// the hardcoded mockSessions constant this file used to also define. The
+/// shape here is unchanged from the mock-data version on purpose, so the
+/// screens that already consumed it didn't need restructuring, only their
+/// data source swapped.
 class SessionSummary {
   const SessionSummary({
     required this.id,
@@ -56,115 +58,3 @@ class SuggestionRecord {
   final int? latencyMs;
   final int? confidencePct;
 }
-
-/// Placeholder recent-session data so Home/History/Detail have something
-/// real to render. Replace with an actual store once past sessions are
-/// persisted server-side and exposed via an API.
-const mockSessions = <SessionSummary>[
-  SessionSummary(
-    id: 's4',
-    title: 'Backend architecture interview',
-    dateLabel: 'Aug 13 · 12:04',
-    monthLabel: 'August 2026',
-    durationLabel: '32m',
-    hadSuggestions: true,
-    suggestionCount: 6,
-    turnCount: 190,
-    transcript: [
-      TranscriptLine(
-        speaker: 'Interviewer',
-        text: 'If queries for products slow down as your data grows, '
-            'what would you do?',
-        suggestion: SuggestionRecord(
-          question: 'If queries for products slow down as your data grows, '
-              'what would you do?',
-          answer: 'Add indexes on frequently filtered/sorted columns, '
-              'introduce caching for repeat reads, and consider '
-              'denormalizing hot query paths as scale demands it.',
-          level: 'medium',
-          latencyMs: 310,
-          confidencePct: 78,
-        ),
-      ),
-      TranscriptLine(
-        speaker: 'You',
-        text: 'I\'d start with indexing frequently queried columns, then '
-            'look at caching and denormalization as it grows.',
-      ),
-      TranscriptLine(
-        speaker: 'Interviewer',
-        text: 'Why do you personally prefer Django for backend work?',
-        suggestion: SuggestionRecord(
-          question: 'Why do you personally prefer Django for backend work?',
-          answer: 'Its batteries-included approach and ORM speed up '
-              'delivery, while the admin panel and auth system remove a '
-              'lot of boilerplate for CRUD-heavy backends.',
-          level: 'medium',
-          latencyMs: 358,
-          confidencePct: 90,
-        ),
-      ),
-    ],
-  ),
-  SessionSummary(
-    id: 's3',
-    title: 'Client discovery call',
-    dateLabel: 'Aug 12 · 31:47',
-    monthLabel: 'August 2026',
-    durationLabel: '31m',
-    hadSuggestions: true,
-    suggestionCount: 4,
-    turnCount: 140,
-    transcript: [
-      TranscriptLine(
-        speaker: 'Client',
-        text: 'What kind of onboarding support do you offer?',
-        suggestion: SuggestionRecord(
-          question: 'What kind of onboarding support do you offer?',
-          answer: 'A dedicated onboarding call in week one, plus async '
-              'support during the first 30 days while your team ramps up.',
-          level: 'quick',
-          latencyMs: 240,
-          confidencePct: 82,
-        ),
-      ),
-    ],
-  ),
-  SessionSummary(
-    id: 's2',
-    title: 'Quick sync — no questions detected',
-    dateLabel: 'Aug 10 · 04:12',
-    monthLabel: 'August 2026',
-    durationLabel: '4m',
-    hadSuggestions: false,
-    suggestionCount: 0,
-    turnCount: 24,
-    transcript: [
-      TranscriptLine(speaker: 'A', text: 'Okay, sounds good.'),
-      TranscriptLine(speaker: 'B', text: 'Yeah, let\'s pick this up tomorrow.'),
-    ],
-  ),
-  SessionSummary(
-    id: 's1',
-    title: 'Standup — sprint planning',
-    dateLabel: 'Aug 9 · 18:22',
-    monthLabel: 'August 2026',
-    durationLabel: '18m',
-    hadSuggestions: true,
-    suggestionCount: 2,
-    turnCount: 60,
-    transcript: [
-      TranscriptLine(speaker: 'A', text: 'Who\'s picking up the auth ticket?'),
-    ],
-  ),
-  SessionSummary(
-    id: 's0',
-    title: 'Vendor negotiation call',
-    dateLabel: 'Jul 29 · 22:03',
-    monthLabel: 'July 2026',
-    durationLabel: '22m',
-    hadSuggestions: true,
-    suggestionCount: 5,
-    turnCount: 95,
-  ),
-];

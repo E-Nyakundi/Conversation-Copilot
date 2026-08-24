@@ -1,114 +1,173 @@
 import 'package:flutter/material.dart';
 
+import '../data/session_repository.dart';
 import '../models/session_summary.dart';
 import '../theme.dart';
 
 /// Matches design/mockups/session_detail_mockup.html. Summary tab is a
 /// placeholder reserved for Phase 8's debrief content — not built yet, per
 /// the build plan.
+///
+/// Real data as of 2026-08-24: list screens (Home, History) only have
+/// summary-level SessionSummary rows (no transcript — see
+/// SessionRepository.fetchSessions' doc comment for why), so this screen
+/// now fetches its own full detail (transcript + suggestions) on open via
+/// SessionRepository.fetchSessionDetail, using the [preview] summary only
+/// for an instant header/stats render while that request is in flight.
 class SessionDetailScreen extends StatefulWidget {
-  const SessionDetailScreen({super.key, required this.session});
+  const SessionDetailScreen({super.key, required this.preview});
 
-  final SessionSummary session;
+  /// Convenience constructor for the common case — a list row's already-
+  /// fetched SessionSummary, used as both the preview and the source of
+  /// the id to fetch full detail for.
+  factory SessionDetailScreen.forSession(SessionSummary summary) {
+    return SessionDetailScreen(preview: summary);
+  }
+
+  /// Summary-level data (title, dateLabel, stats) available immediately
+  /// from the list screen that pushed this route — rendered right away
+  /// so the header isn't blank while the full-detail fetch is in flight.
+  /// transcript on this instance is typically empty (list endpoints don't
+  /// include it); the fetched detail below is what actually populates
+  /// the Transcript/Suggestions tabs.
+  final SessionSummary preview;
 
   @override
   State<SessionDetailScreen> createState() => _SessionDetailScreenState();
 }
 
 class _SessionDetailScreenState extends State<SessionDetailScreen> {
+  final _repository = SessionRepository();
+  late Future<SessionSummary> _detailFuture;
   int _tab = 0;
 
   @override
+  void initState() {
+    super.initState();
+    _detailFuture = _repository.fetchSessionDetail(widget.preview.id);
+  }
+
+  @override
+  void dispose() {
+    _repository.dispose();
+    super.dispose();
+  }
+
+  Future<void> _retry() async {
+    setState(() {
+      _detailFuture = _repository.fetchSessionDetail(widget.preview.id);
+    });
+    await _detailFuture;
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final session = widget.session;
-    return Scaffold(
-      backgroundColor: CopilotColors.ink,
-      appBar: CopilotHeader(
-        title: session.title,
-        subtitle: session.dateLabel,
-        onBack: () => Navigator.of(context).pop(),
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 6, 20, 16),
-            child: Row(
-              children: [
-                _Stat(value: session.durationLabel, label: 'Duration'),
-                const SizedBox(width: 8),
-                _Stat(
-                  value: '${session.suggestionCount}',
-                  label: 'Suggestions',
-                  accent: true,
-                ),
-                const SizedBox(width: 8),
-                _Stat(value: '${session.turnCount}', label: 'Turns'),
-              ],
-            ),
+    return FutureBuilder<SessionSummary>(
+      future: _detailFuture,
+      builder: (context, snapshot) {
+        // Prefer the fetched detail once it lands (has the real
+        // transcript); fall back to the preview for header/stats while
+        // loading or if the fetch failed, so the screen never looks
+        // emptier than the data the user already had on the list screen.
+        final session = snapshot.data ?? widget.preview;
+        final isLoadingTranscript =
+            snapshot.connectionState == ConnectionState.waiting;
+        final loadFailed = snapshot.hasError;
+
+        return Scaffold(
+          backgroundColor: CopilotColors.ink,
+          appBar: CopilotHeader(
+            title: session.title,
+            subtitle: session.dateLabel,
+            onBack: () => Navigator.of(context).pop(),
           ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            decoration: const BoxDecoration(
-              border: Border(bottom: BorderSide(color: CopilotColors.hairline)),
-            ),
-            child: Row(
-              children: [
-                _TabLabel(
-                  label: 'Transcript',
-                  active: _tab == 0,
-                  onTap: () => setState(() => _tab = 0),
+          body: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 6, 20, 16),
+                child: Row(
+                  children: [
+                    _Stat(value: session.durationLabel, label: 'Duration'),
+                    const SizedBox(width: 8),
+                    _Stat(
+                      value: '${session.suggestionCount}',
+                      label: 'Suggestions',
+                      accent: true,
+                    ),
+                    const SizedBox(width: 8),
+                    _Stat(value: '${session.turnCount}', label: 'Turns'),
+                  ],
                 ),
-                _TabLabel(
-                  label: 'Suggestions',
-                  active: _tab == 1,
-                  onTap: () => setState(() => _tab = 1),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                decoration: const BoxDecoration(
+                  border: Border(bottom: BorderSide(color: CopilotColors.hairline)),
                 ),
-                _TabLabel(
-                  label: 'Summary',
-                  active: _tab == 2,
-                  onTap: () => setState(() => _tab = 2),
+                child: Row(
+                  children: [
+                    _TabLabel(
+                      label: 'Transcript',
+                      active: _tab == 0,
+                      onTap: () => setState(() => _tab = 0),
+                    ),
+                    _TabLabel(
+                      label: 'Suggestions',
+                      active: _tab == 1,
+                      onTap: () => setState(() => _tab = 1),
+                    ),
+                    _TabLabel(
+                      label: 'Summary',
+                      active: _tab == 2,
+                      onTap: () => setState(() => _tab = 2),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+              Expanded(
+                child: isLoadingTranscript
+                    ? const _DetailLoading()
+                    : loadFailed
+                        ? _DetailError(onRetry: _retry)
+                        : switch (_tab) {
+                            0 => _TranscriptTab(session: session),
+                            1 => _SuggestionsTab(session: session),
+                            _ => const _SummaryTab(),
+                          },
+              ),
+              Container(
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 22),
+                decoration: const BoxDecoration(
+                  border: Border(top: BorderSide(color: CopilotColors.hairline)),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: _ActionButton(
+                        icon: Icons.ios_share,
+                        label: 'Export',
+                        onTap: () {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Export not wired up yet.')),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _ActionButton(
+                        icon: Icons.delete_outline,
+                        label: 'Delete',
+                        onTap: () => _confirmDelete(context),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-          Expanded(
-            child: switch (_tab) {
-              0 => _TranscriptTab(session: session),
-              1 => _SuggestionsTab(session: session),
-              _ => const _SummaryTab(),
-            },
-          ),
-          Container(
-            padding: const EdgeInsets.fromLTRB(20, 14, 20, 22),
-            decoration: const BoxDecoration(
-              border: Border(top: BorderSide(color: CopilotColors.hairline)),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _ActionButton(
-                    icon: Icons.ios_share,
-                    label: 'Export',
-                    onTap: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Export not wired up yet.')),
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _ActionButton(
-                    icon: Icons.delete_outline,
-                    label: 'Delete',
-                    onTap: () => _confirmDelete(context),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -120,8 +179,8 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
         title: const Text('Delete session?', style: TextStyle(color: CopilotColors.paper)),
         content: const Text(
           'This removes the transcript and suggestions for this session. '
-          'There is no persistence layer yet, so this only clears it from '
-          'the current view.',
+          'There is no delete endpoint yet, so this only clears it from '
+          'the current view — the session still exists on the server.',
           style: TextStyle(color: CopilotColors.mist),
         ),
         actions: [
@@ -312,6 +371,60 @@ class _SummaryTab extends StatelessWidget {
     // Placeholder — reserved for Phase 8's debrief content, not built yet.
     return const _EmptyTab(
       text: 'Session summaries arrive with Phase 8 (Debrief) — not built yet.',
+    );
+  }
+}
+
+class _DetailLoading extends StatelessWidget {
+  const _DetailLoading();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: SizedBox(
+        width: 22,
+        height: 22,
+        child: CircularProgressIndicator(strokeWidth: 2, color: CopilotColors.amber),
+      ),
+    );
+  }
+}
+
+class _DetailError extends StatelessWidget {
+  const _DetailError({required this.onRetry});
+
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.cloud_off, color: CopilotColors.mist, size: 24),
+            const SizedBox(height: 10),
+            const Text(
+              'Couldn\'t load this session\'s transcript.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: CopilotColors.mist, fontSize: 13),
+            ),
+            const SizedBox(height: 10),
+            GestureDetector(
+              onTap: onRetry,
+              child: const Text(
+                'Retry',
+                style: TextStyle(
+                  fontFamily: CopilotFonts.mono,
+                  fontSize: 11,
+                  color: CopilotColors.blue,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

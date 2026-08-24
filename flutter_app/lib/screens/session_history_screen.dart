@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../data/session_repository.dart';
 import '../models/session_summary.dart';
 import '../theme.dart';
 import 'session_detail_screen.dart';
@@ -10,6 +11,11 @@ enum _HistoryFilter { all, hasSuggestions, thisWeek }
 /// pushed route (from Home's "View all", or Session Detail's back target)
 /// and as a bottom-nav tab root (`showBackButton: false`) — see
 /// AppShell in main.dart.
+///
+/// Real data as of 2026-08-24 — fetches from SessionRepository instead of
+/// the old mockSessions constant. Filtering/search still run client-side
+/// over the fetched list (small enough dataset for now that a server-side
+/// search endpoint isn't worth it yet).
 class SessionHistoryScreen extends StatefulWidget {
   const SessionHistoryScreen({super.key, this.showBackButton = true});
 
@@ -21,23 +27,45 @@ class SessionHistoryScreen extends StatefulWidget {
 
 class _SessionHistoryScreenState extends State<SessionHistoryScreen> {
   final _searchController = TextEditingController();
+  final _repository = SessionRepository();
   _HistoryFilter _filter = _HistoryFilter.all;
   String _query = '';
+  late Future<List<SessionSummary>> _sessionsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _sessionsFuture = _repository.fetchSessions();
+  }
 
   @override
   void dispose() {
     _searchController.dispose();
+    _repository.dispose();
     super.dispose();
   }
 
-  List<SessionSummary> get _filtered {
-    var list = mockSessions;
+  Future<void> _refresh() async {
+    setState(() {
+      _sessionsFuture = _repository.fetchSessions();
+    });
+    await _sessionsFuture;
+  }
+
+  List<SessionSummary> _filtered(List<SessionSummary> all) {
+    var list = all;
     if (_filter == _HistoryFilter.hasSuggestions) {
       list = list.where((s) => s.hadSuggestions).toList();
     } else if (_filter == _HistoryFilter.thisWeek) {
-      // No real dates on the mock data — approximate "this week" as the
-      // first two (most recent) sessions, same intent as the mockup's chip.
-      list = list.take(2).toList();
+      // SessionSummary only carries display strings (dateLabel/monthLabel),
+      // not a raw DateTime — same shape the mock version used, so a real
+      // "last 7 days" filter isn't possible without a model change.
+      // Approximated the same way the original mock chip was: since the
+      // API returns sessions newest-first, the first few rows in the
+      // (already ordered) list stand in for "this week". Revisit if
+      // SessionSummary ever grows a real startedAt field.
+      const thisWeekApproxCount = 5;
+      list = list.take(thisWeekApproxCount).toList();
     }
     if (_query.trim().isNotEmpty) {
       final q = _query.trim().toLowerCase();
@@ -48,12 +76,6 @@ class _SessionHistoryScreenState extends State<SessionHistoryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final sessions = _filtered;
-    final months = <String>[];
-    for (final s in sessions) {
-      if (!months.contains(s.monthLabel)) months.add(s.monthLabel);
-    }
-
     return Scaffold(
       backgroundColor: CopilotColors.ink,
       appBar: CopilotHeader(
@@ -119,9 +141,80 @@ class _SessionHistoryScreenState extends State<SessionHistoryScreen> {
             ),
           ),
           Expanded(
-            child: sessions.isEmpty
-                ? const _EmptyHistory()
-                : ListView(
+            child: RefreshIndicator(
+              onRefresh: _refresh,
+              color: CopilotColors.amber,
+              backgroundColor: CopilotColors.panel,
+              child: FutureBuilder<List<SessionSummary>>(
+                future: _sessionsFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: const [
+                        SizedBox(height: 60),
+                        Center(
+                          child: SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: CopilotColors.amber,
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  }
+                  if (snapshot.hasError) {
+                    return ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: [
+                        const SizedBox(height: 60),
+                        const Icon(Icons.cloud_off, color: CopilotColors.mist, size: 22),
+                        const SizedBox(height: 10),
+                        const Center(
+                          child: Text(
+                            'Couldn\'t load session history.',
+                            style: TextStyle(color: CopilotColors.mist, fontSize: 12.5),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Center(
+                          child: GestureDetector(
+                            onTap: _refresh,
+                            child: const Text(
+                              'Retry',
+                              style: TextStyle(
+                                fontFamily: CopilotFonts.mono,
+                                fontSize: 11,
+                                color: CopilotColors.blue,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  }
+
+                  final sessions = _filtered(snapshot.data ?? const []);
+                  final months = <String>[];
+                  for (final s in sessions) {
+                    if (!months.contains(s.monthLabel)) months.add(s.monthLabel);
+                  }
+
+                  if (sessions.isEmpty) {
+                    return ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: const [
+                        SizedBox(height: 60),
+                        _EmptyHistory(),
+                      ],
+                    );
+                  }
+
+                  return ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
                     children: [
                       for (final month in months) ...[
@@ -141,7 +234,10 @@ class _SessionHistoryScreenState extends State<SessionHistoryScreen> {
                           _HistoryCard(session: s),
                       ],
                     ],
-                  ),
+                  );
+                },
+              ),
+            ),
           ),
         ],
       ),
@@ -192,7 +288,7 @@ class _HistoryCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(12),
       onTap: () {
         Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => SessionDetailScreen(session: session)),
+          MaterialPageRoute(builder: (_) => SessionDetailScreen.forSession(session)),
         );
       },
       child: Container(
