@@ -171,9 +171,25 @@ def get_system_prompt(answer_format: str = "prose") -> str:
     breaking suggestion generation entirely — the whole point of a
     silently-optional feature is that its absence shouldn't be able to
     take anything else down.
+
+    Phase 6.5 (2026-08-24): also prepends UserProfile.persona_summary
+    when present -- a distilled voice/personality characterization built
+    from the whole knowledge base (see knowledge/persona.py and that
+    field's docstring in conversation/models.py). This is deliberately
+    separate from knowledge retrieval (_build_knowledge_block /
+    retrieve_knowledge_context below): persona always shapes HOW the
+    model answers, on every turn, regardless of whether that turn needs
+    a specific fact; retrieval stays relevance-gated and only supplies
+    WHAT the model answers with when a turn's question actually calls
+    for it. Ordered after identity context (name/role/bio) and before
+    the base system prompt -- same "small, bounded, always there"
+    placement identity context already uses, and covered by the same
+    lookup/exception so a persona lookup failure degrades no
+    differently than an identity lookup failure would.
     """
     base_prompt = CODE_SYSTEM_PROMPT if answer_format == "code" else SUGGESTION_SYSTEM_PROMPT
 
+    prefix = ""
     try:
         from conversation.models import UserProfile
 
@@ -181,11 +197,16 @@ def get_system_prompt(answer_format: str = "prose") -> str:
         if profile.is_populated():
             identity = build_identity_context(profile.name, profile.role, profile.bio)
             if identity:
-                return identity + base_prompt
+                prefix += identity
+        if profile.persona_summary.strip():
+            prefix += (
+                "How you should sound, based on the user's own notes and "
+                f"documents: {profile.persona_summary.strip()} "
+            )
     except Exception:
-        logger.warning("Failed to load UserProfile for identity context", exc_info=True)
+        logger.warning("Failed to load UserProfile for identity/persona context", exc_info=True)
 
-    return base_prompt
+    return prefix + base_prompt
 
 
 def get_max_tokens(level):
@@ -306,13 +327,23 @@ def _build_knowledge_block(knowledge_chunks: list[str] | None) -> str:
     conversation as what's actually happening right now — the more
     time-sensitive/relevant-right-now content sits closer to the actual
     question.
+
+    2026-08-24 (item 1 of the knowledge-base-as-personality bug): the
+    original "use this if it's relevant, ignore it if it isn't" wording
+    was too easy for the model to treat as optional/skippable filler,
+    even though these passages were already selected by retrieve_context
+    as relevant to this exact question (retrieval, not raw dumping —
+    see that function's own scoring/min-score gate). Reworded to state
+    plainly that this material was already selected as relevant, so the
+    model doesn't need to re-decide whether to trust it.
     """
     if not knowledge_chunks:
         return ""
     passages = "\n\n".join(f"- {chunk}" for chunk in knowledge_chunks)
     return (
-        "Relevant background from the user's own notes/documents "
-        f"(use this if it's relevant, ignore it if it isn't):\n{passages}\n\n"
+        "The following passages were retrieved from the user's own notes/"
+        "documents because they are relevant to the question just asked. "
+        f"Use them as real background you already know:\n{passages}\n\n"
     )
 
 

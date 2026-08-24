@@ -48,6 +48,26 @@ class UserProfile(models.Model):
 
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Phase 6.5 (2026-08-24): a compact, synthesized voice/personality
+    # summary distilled from the knowledge base — NOT raw retrieved
+    # chunks. Ed's framing: the KB is "our source of personality for the
+    # model" — the model should sound like the person the KB describes
+    # on every turn, regardless of whether that turn needs a specific
+    # fact from it. That's a different job from knowledge/documents.py's
+    # retrieve_context (relevance-gated, per-turn fact lookup), so it
+    # gets its own bounded, always-injected field here rather than
+    # overloading FAISS retrieval to also carry persona. Built via
+    # knowledge/persona.py:build_persona_summary(), cached here (not
+    # regenerated per-request) since building it costs an LLM call —
+    # see regenerate_persona management command for how it's refreshed.
+    persona_summary = models.TextField(
+        blank=True,
+        help_text="Distilled voice/personality summary built from the knowledge base. "
+        "Injected into every prompt alongside identity context, unlike knowledge "
+        "retrieval which is relevance-gated per turn.",
+    )
+    persona_summary_updated_at = models.DateTimeField(null=True, blank=True)
+
     def save(self, *args, **kwargs):
         # Enforce the singleton: always write to the same row regardless
         # of what's passed in, so there's exactly one UserProfile ever.
