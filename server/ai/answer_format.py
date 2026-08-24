@@ -169,6 +169,36 @@ _PROSE_SIGNALS = re.compile(
     re.IGNORECASE,
 )
 
+# Bug fix (2026-08-24, Phase D): a describe/explain-style question can
+# still contain a real build verb + language inside its own subordinate
+# clause — "Describe a Python or bash script you'd write to find and
+# delete files older than 30 days..." has "write" + "python"/"bash" and
+# was reaching the build-verb+language CODE rule below despite the
+# governing verb of the whole question being "describe", not "write".
+# Confirmed against a real prod turn (2026-08-24 make prod-logs session):
+# this is an oral interview asking the candidate to talk through their
+# approach, not to hand back an actual script — Ed had to ask the
+# interviewer to rephrase because the suggestion came back as a code
+# block. The existing _PROSE_SIGNALS list only covers "describe a time"
+# (behavioral framing), not "describe a script/function/system you'd
+# write" (technical-but-still-oral framing) — a real gap, not an
+# overlapping case.
+#
+# Deliberately narrow, same posture as every other signal in this file:
+# only fires when the sentence's OWN governing verb is describe/explain/
+# walk-me-through and it's aimed at a build verb inside a relative
+# clause ("...you'd write", "...you would implement", "...you'd build").
+# Doesn't touch a bare "describe" with no downstream build verb (that
+# already falls through to plain PROSE with no technical anchor) or a
+# leading build verb with no describe/explain framing (still CODE, as
+# it should be — "write a function that reverses a linked list" is a
+# real code ask, not a description-of-a-script ask).
+_DESCRIBE_YOUR_APPROACH = re.compile(
+    r"\b(describe|explain|walk( me)? through)\b[^.?!]{0,80}\b"
+    r"(you('d| would)|you will)\s+(write|implement|build|design|code)\b",
+    re.IGNORECASE,
+)
+
 
 def classify(question_text: str) -> str:
     """
@@ -190,6 +220,11 @@ def classify(question_text: str) -> str:
     the bare-language rule below for why. This is the fix for Ed's real-
     session report that plain experience/background questions mentioning
     a tech noun were being misrouted to CODE.
+
+    Phase D (2026-08-24): "describe/explain a script you'd write..." no
+    longer returns straight CODE just because a build verb + language
+    happen to sit inside the sentence's own subordinate clause — see
+    _DESCRIBE_YOUR_APPROACH above for the real prod case this fixes.
     """
     text = question_text or ""
 
@@ -199,6 +234,7 @@ def classify(question_text: str) -> str:
     has_language = bool(_LANGUAGE_SIGNALS.search(text))
     has_ds_algo = bool(_DS_ALGO_SIGNALS.search(text))
     has_prose_signal = bool(_PROSE_SIGNALS.search(text))
+    has_describe_your_approach = bool(_DESCRIBE_YOUR_APPROACH.search(text))
 
     # An explicit ask for code by name ("a couple code snippets") wins
     # outright — nothing else in the sentence can make this NOT a code
@@ -224,6 +260,20 @@ def classify(question_text: str) -> str:
     # a clearer, more specific signal.
     if has_prose_signal:
         return PROSE
+
+    # "Describe/explain a script you'd write..." — the question is
+    # governed by describe/explain, so it's asking the candidate to talk
+    # through their approach out loud, not hand back an artifact. Routed
+    # to CODE_AND_PROSE rather than straight PROSE: there's still a real
+    # code-shaped answer worth having ready (e.g. as a written reference
+    # or for a follow-up "now actually write it"), it just can't be the
+    # ONLY suggestion shown for a question that's explicitly asking for
+    # spoken description. Checked ahead of the build-verb+language rule
+    # below for the same reason has_prose_signal is checked first: a
+    # governing describe/explain frame should win over a build verb that
+    # merely appears inside the sentence's own subordinate clause.
+    if has_describe_your_approach:
+        return CODE_AND_PROSE
 
     # Strong, unambiguous code ask: an explicit build verb combined with
     # either a named language or a CS-specific term ("write a function",

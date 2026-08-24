@@ -760,6 +760,27 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
 
         answer_format = classify(combined_question)
 
+        # Bug fix (2026-08-24, Phase D): this product is used live, in an
+        # oral interview, spoken out loud — Ed's real prod feedback is
+        # that a code-only suggestion "feels off," like the candidate is
+        # answering as a machine, when the actual expectation is to talk
+        # through the answer with understanding of its scope. A plain
+        # CODE suggestion with no spoken companion answer is never
+        # actually useful here, even for a genuinely unambiguous code
+        # ask ("write a function that reverses a linked list") — the
+        # candidate still has to SAY something, not just read code aloud.
+        # Folding straight CODE into CODE_AND_PROSE at this single call
+        # site (rather than changing classify()'s CODE branch itself)
+        # keeps ai/answer_format.py's three-way CODE/PROSE/CODE_AND_PROSE
+        # distinction intact for anything else that inspects it (tests,
+        # future callers, the Suggestion.answer_format field itself still
+        # records the classifier's real CODE verdict via the code_result-
+        # only degrade path below) while guaranteeing every suggestion
+        # actually generated and shown to Ed always carries a spoken
+        # alternative alongside any code.
+        if answer_format == CODE:
+            answer_format = CODE_AND_PROSE
+
         print(
             f"[suggest] extraction {extraction.id} ({combined_question!r}): "
             f"starting (level={level}, format={answer_format}, "
