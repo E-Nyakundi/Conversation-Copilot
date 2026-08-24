@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../main.dart' show PingTestScreen;
 import '../theme.dart';
+import 'knowledge_base_screen.dart';
 
 /// Matches design/mockups/settings_mockup.html. Answer-length default and
 /// the diarization toggle are in-memory only — there's no settings
@@ -58,6 +59,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 trailing: _Switch(
                   value: _diarization,
                   onChanged: (v) => setState(() => _diarization = v),
+                ),
+              ),
+              _SettingsRow(
+                label: 'Knowledge base',
+                sublabel: 'notes and docs the assistant can draw on',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const KnowledgeBaseScreen()),
                 ),
               ),
               const _SettingsRow(
