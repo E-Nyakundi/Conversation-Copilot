@@ -70,7 +70,13 @@ pyannote.audio>=3.1,<4.0
 # Pinning below 1.0 keeps the old kwarg name pyannote 3.x expects.
 huggingface_hub<1.0
 
+# Phase 6 — personal knowledge base (knowledge/embeddings.py,
+# knowledge/vector_store.py): sentence-transformers for chunk/query
+# embedding, faiss-cpu for the vector index. Both lazily/deferred-
+# imported, same as torch/faster-whisper above, so `manage.py check`
+# etc. don't hard-require them to be installed.
+sentence-transformers>=3.0,<4.0
+faiss-cpu>=1.8,<2.0
+
 # Added in later phases — uncomment as you build them:
-# sentence-transformers
-# faiss-cpu
 # llama-cpp-python

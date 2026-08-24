@@ -732,6 +732,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         """
         from ai.answer_format import CODE, CODE_AND_PROSE, PROSE, classify
         from ai.cloud_router import get_suggestion
+        from ai.prompts import retrieve_knowledge_context
 
         extraction = extractions[0]
 
@@ -797,6 +798,15 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         started = time.monotonic()
         try:
             context_turns = await self._recent_turns_context(context_limit)
+            # Phase 6 (2026-08-24): retrieve_knowledge_context is a
+            # blocking call (embeds the query, searches FAISS), wrapped
+            # in to_thread same as get_suggestion below so it never
+            # blocks incoming audio frames on this connection. Already
+            # degrades to None internally on any failure/empty knowledge
+            # base — see ai/prompts.py — so no separate try/except needed
+            # here; None flows straight through to get_suggestion exactly
+            # like "no knowledge base configured".
+            knowledge_chunks = await asyncio.to_thread(retrieve_knowledge_context, combined_question)
 
             if answer_format == CODE_AND_PROSE:
                 # Two independent generations, run concurrently rather
@@ -805,8 +815,8 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                 # for it serially. Each is wrapped in to_thread since
                 # get_suggestion is a blocking call.
                 code_result, prose_result = await asyncio.gather(
-                    asyncio.to_thread(get_suggestion, combined_question, context_turns, level, CODE),
-                    asyncio.to_thread(get_suggestion, combined_question, context_turns, level, PROSE),
+                    asyncio.to_thread(get_suggestion, combined_question, context_turns, level, CODE, knowledge_chunks),
+                    asyncio.to_thread(get_suggestion, combined_question, context_turns, level, PROSE, knowledge_chunks),
                     return_exceptions=True,
                 )
                 # Either half can fail independently (a Groq hiccup on
@@ -840,7 +850,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                     secondary_text = None
             else:
                 result = await asyncio.to_thread(
-                    get_suggestion, combined_question, context_turns, level, answer_format
+                    get_suggestion, combined_question, context_turns, level, answer_format, knowledge_chunks
                 )
                 secondary_text = None
         except asyncio.CancelledError:

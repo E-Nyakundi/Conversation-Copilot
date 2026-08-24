@@ -64,7 +64,11 @@ def _get_groq_client():
 
 
 def _suggest_via_groq(
-    question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL, answer_format: str = "prose"
+    question: str,
+    context_turns: list[dict],
+    level: str = DEFAULT_ANSWER_LEVEL,
+    answer_format: str = "prose",
+    knowledge_chunks: list[str] | None = None,
 ) -> dict:
     """
     Raises on any Groq-side failure — get_suggestion() decides whether to
@@ -76,6 +80,11 @@ def _suggest_via_groq(
     much larger token budget instead of the prose prompt's spoken-brevity
     path (see ai/prompts.py:get_system_prompt). See ai/answer_format.py
     for how a question gets routed to one or the other.
+
+    knowledge_chunks (Phase 6, 2026-08-24): optional retrieved passages
+    from the personal knowledge base, passed straight through to
+    ai/prompts.py's builders — see that module's docstring. None/empty
+    (the default) produces the exact same prompt as before Phase 6.
     """
     from groq import APIConnectionError, APIError, APITimeoutError, RateLimitError
 
@@ -89,10 +98,10 @@ def _suggest_via_groq(
 
     if answer_format == "code":
         max_tokens = get_code_max_tokens(level)
-        user_prompt = build_code_prompt(question, context_turns, level)
+        user_prompt = build_code_prompt(question, context_turns, level, knowledge_chunks=knowledge_chunks)
     else:
         max_tokens = get_max_tokens(level)
-        user_prompt = build_suggestion_prompt(question, context_turns, level)
+        user_prompt = build_suggestion_prompt(question, context_turns, level, knowledge_chunks=knowledge_chunks)
     # 2026-08-24: get_system_prompt() prepends first-person identity
     # context from UserProfile when one is populated — see that
     # function's docstring in ai/prompts.py. Byte-identical to the old
@@ -138,7 +147,11 @@ def _suggest_via_groq(
 
 
 def get_suggestion(
-    question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL, answer_format: str = "prose"
+    question: str,
+    context_turns: list[dict],
+    level: str = DEFAULT_ANSWER_LEVEL,
+    answer_format: str = "prose",
+    knowledge_chunks: list[str] | None = None,
 ) -> dict:
     """
     Public entry point — same signature and return shape as
@@ -154,10 +167,15 @@ def get_suggestion(
     which one actually serves the request.
     answer_format: "prose" (default) or "code" — see ai/answer_format.py.
     Passed through to both the Groq and local paths identically.
+    knowledge_chunks (Phase 6, 2026-08-24): optional retrieved passages
+    from the personal knowledge base — passed through to both paths
+    identically, so a Groq failure falling back to local generation
+    doesn't silently lose knowledge-base grounding, same "don't let the
+    fallback regress" rule already applied to identity context.
     """
     if os.environ.get("GROQ_API_KEY"):
         try:
-            return _suggest_via_groq(question, context_turns, level, answer_format)
+            return _suggest_via_groq(question, context_turns, level, answer_format, knowledge_chunks)
         except Exception:
             logger.warning(
                 "Groq suggestion failed, falling back to local model",
@@ -168,4 +186,4 @@ def get_suggestion(
 
     from ai.local_llm import get_llm
 
-    return get_llm().suggest_answer(question, context_turns, level, answer_format)
+    return get_llm().suggest_answer(question, context_turns, level, answer_format, knowledge_chunks)

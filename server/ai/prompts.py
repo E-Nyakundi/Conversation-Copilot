@@ -13,9 +13,25 @@ next to the prompt builder that consumes it rather than scattered across
 ai/local_llm.py and ai/cloud_router.py, since both callers need the exact
 same level->instruction and level->token-budget mapping and drift between
 them would be a silent bug.
+
+Phase 6 (2026-08-24): build_suggestion_prompt/build_code_prompt now
+accept an optional knowledge_chunks param — retrieved passages from the
+user's personal knowledge base (see knowledge/documents.py:
+retrieve_context), formatted by the shared _build_knowledge_block helper
+and injected ahead of live conversation context. This module still
+doesn't do retrieval itself — the caller (audio/consumers.py) is
+responsible for calling retrieve_knowledge_context() below (which wraps
+knowledge.documents.retrieve_context with a safe-degrade fallback) and
+passing the result in, same separation this docstring already described
+for Phase 9's domain-mode templates. Phase 6 has now landed — this used
+to say RAG "slots in later without a rewrite"; it has, and
+retrieve_knowledge_context below is the single place that happens from.
 """
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 SUGGESTION_SYSTEM_PROMPT = (
     "You are a real-time conversation copilot silently listening to a live "
@@ -213,13 +229,44 @@ def get_code_max_tokens(level):
     return CODE_MAX_TOKENS[level]
 
 
-def build_code_prompt(question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL) -> str:
+def retrieve_knowledge_context(query: str) -> list[str] | None:
+    """
+    Phase 6 (2026-08-24): the single place get_suggestion's callers
+    would otherwise each have to import knowledge.documents themselves —
+    consolidating here means audio/consumers.py doesn't need to know
+    the knowledge app exists at all beyond calling this. Same
+    safe-degrade posture as get_system_prompt's UserProfile lookup: a
+    missing/uninstalled knowledge app (e.g. an older deployment that
+    hasn't migrated yet) or any retrieval failure returns None rather
+    than raising, and None is treated identically to "no knowledge base
+    configured" by _build_knowledge_block below — never a reason to fail
+    the whole suggestion.
+    """
+    try:
+        from knowledge.documents import retrieve_context
+
+        return retrieve_context(query)
+    except Exception:
+        logger.warning("Knowledge retrieval unavailable, degrading to no context", exc_info=True)
+        return None
+
+
+def build_code_prompt(
+    question: str,
+    context_turns: list[dict],
+    level: str = DEFAULT_ANSWER_LEVEL,
+    knowledge_chunks: list[str] | None = None,
+) -> str:
     """
     Same shape as build_suggestion_prompt but paired with
     CODE_SYSTEM_PROMPT — level here loosely controls code
     thoroughness/explanation depth rather than sentence count, since
     "one short sentence" (quick's ANSWER_LEVELS instruction) doesn't
     mean anything for a code answer.
+
+    knowledge_chunks (Phase 6, 2026-08-24): optional retrieved passages
+    from the personal knowledge base — see build_suggestion_prompt's own
+    docstring below for the full reasoning; identical handling here.
     """
     level = normalize_level(level)
     if context_turns:
@@ -227,6 +274,8 @@ def build_code_prompt(question: str, context_turns: list[dict], level: str = DEF
         context_block = f"Recent conversation:\n{context_lines}\n\n"
     else:
         context_block = ""
+
+    knowledge_block = _build_knowledge_block(knowledge_chunks)
 
     depth_instruction = {
         "quick": "Keep it minimal — the core working solution only, no extra explanation.",
@@ -238,20 +287,56 @@ def build_code_prompt(question: str, context_turns: list[dict], level: str = DEF
     }[level]
 
     return (
-        f"{context_block}Coding question just asked: {question}\n\n"
+        f"{knowledge_block}{context_block}Coding question just asked: {question}\n\n"
         f"{depth_instruction}\n\nSuggested answer:"
     )
 
 
-def build_suggestion_prompt(question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL) -> str:
+def _build_knowledge_block(knowledge_chunks: list[str] | None) -> str:
+    """
+    Phase 6: formats retrieved knowledge-base passages into a prompt
+    block, or returns "" if there's nothing to inject — an empty/None
+    knowledge_chunks list must produce byte-identical prompts to before
+    Phase 6 existed, same "absence means silently unchanged" contract as
+    build_identity_context above. Shared by both build_suggestion_prompt
+    and build_code_prompt so the two don't drift on formatting.
+
+    Placed first (before conversation context) so it reads as background
+    reference material the model already "knows," with the live
+    conversation as what's actually happening right now — the more
+    time-sensitive/relevant-right-now content sits closer to the actual
+    question.
+    """
+    if not knowledge_chunks:
+        return ""
+    passages = "\n\n".join(f"- {chunk}" for chunk in knowledge_chunks)
+    return (
+        "Relevant background from the user's own notes/documents "
+        f"(use this if it's relevant, ignore it if it isn't):\n{passages}\n\n"
+    )
+
+
+def build_suggestion_prompt(
+    question: str,
+    context_turns: list[dict],
+    level: str = DEFAULT_ANSWER_LEVEL,
+    knowledge_chunks: list[str] | None = None,
+) -> str:
     """
     question: the extracted question text (Extraction.text where
     type == "question") to suggest an answer for.
     context_turns: recent [{"speaker": ..., "text": ...}] turns, oldest
-    first, for grounding. Phase 3 has no knowledge base yet (that's Phase
-    6) — this is conversation context only, not retrieved facts, so the
-    model is working from what it already knows plus what's been said out
-    loud in this session.
+    first, for grounding.
+    knowledge_chunks (Phase 6, 2026-08-24): optional retrieved passages
+    from the user's personal knowledge base (see
+    knowledge/documents.py:retrieve_context) — plain strings, highest-
+    relevance first. None/empty (the default, and what every caller
+    passed before Phase 6 existed) produces the exact same prompt as
+    before — this parameter is additive, not a required part of calling
+    either builder. Callers (audio/consumers.py) are expected to call
+    retrieve_knowledge_context() above and pass the result in; this
+    module doesn't do retrieval itself, same separation of concerns as
+    ai/prompts.py never calling ai/local_llm.py directly.
     level: one of ANSWER_LEVELS' keys (Phase 4) — invalid/missing values
     are normalized to DEFAULT_ANSWER_LEVEL rather than raising.
     """
@@ -262,5 +347,10 @@ def build_suggestion_prompt(question: str, context_turns: list[dict], level: str
     else:
         context_block = ""
 
+    knowledge_block = _build_knowledge_block(knowledge_chunks)
+
     instruction = ANSWER_LEVELS[level]["instruction"]
-    return f"{context_block}Question just asked: {question}\n\n{instruction}\n\nSuggested answer:"
+    return (
+        f"{knowledge_block}{context_block}Question just asked: {question}\n\n"
+        f"{instruction}\n\nSuggested answer:"
+    )

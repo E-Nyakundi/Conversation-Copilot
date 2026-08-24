@@ -59,7 +59,12 @@ class LocalLLM:
         )
 
     def suggest_answer(
-        self, question: str, context_turns: list[dict], level: str = DEFAULT_ANSWER_LEVEL, answer_format: str = "prose"
+        self,
+        question: str,
+        context_turns: list[dict],
+        level: str = DEFAULT_ANSWER_LEVEL,
+        answer_format: str = "prose",
+        knowledge_chunks: list[str] | None = None,
     ) -> dict:
         """
         question: extracted question text to answer.
@@ -73,14 +78,21 @@ class LocalLLM:
         failure falling back to this local path still gets a real code
         prompt/token-budget instead of silently reverting to the
         spoken-brevity one. See ai/answer_format.py.
+        knowledge_chunks (Phase 6, 2026-08-24): optional retrieved
+        passages from the personal knowledge base, passed straight
+        through to ai/prompts.py's builders — mirrors
+        ai.cloud_router.get_suggestion's same parameter, so a Groq
+        failure falling back to this local path doesn't silently lose
+        knowledge-base grounding either. None/empty produces the exact
+        same prompt as before Phase 6.
         Returns {"text": str, "model": str}.
         """
         if answer_format == "code":
             max_tokens = get_code_max_tokens(level)
-            user_prompt = build_code_prompt(question, context_turns, level)
+            user_prompt = build_code_prompt(question, context_turns, level, knowledge_chunks=knowledge_chunks)
         else:
             max_tokens = get_max_tokens(level)
-            user_prompt = build_suggestion_prompt(question, context_turns, level)
+            user_prompt = build_suggestion_prompt(question, context_turns, level, knowledge_chunks=knowledge_chunks)
         # 2026-08-24: get_system_prompt() prepends first-person identity
         # context from UserProfile when one is populated (see ai/prompts.py).
         # Without this, a Groq outage falling back to this local path would

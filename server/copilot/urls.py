@@ -30,6 +30,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("health/", health),
     path("api/", include("api.urls")),
+    path("api/knowledge/", include("knowledge.urls")),
     # No-tunnel frontend (auto-connects to ws://<host>/ws/audio/, see
     # SETUP_NO_TUNNEL.md). This was previously undefined, so
     # http://localhost:8000/ 404'd and there was no way to reach

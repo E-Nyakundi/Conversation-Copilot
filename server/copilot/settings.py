@@ -29,6 +29,11 @@ INSTALLED_APPS = [
            # discover an app's management commands unless the app is
            # actually registered, so this was a real bug, not just missing
            # for score_answer_format's sake)
+    "knowledge",  # Phase 6: personal knowledge base (Document/Chunk models,
+                  # chunking/embedding/FAISS retrieval, /api/knowledge/ REST
+                  # surface) — registered up front this time, unlike ai
+                  # above, so the same "app exists but isn't registered"
+                  # bug can't recur here.
 ]
 
 MIDDLEWARE = [
