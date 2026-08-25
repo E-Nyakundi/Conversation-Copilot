@@ -37,9 +37,31 @@ SUGGESTION_SYSTEM_PROMPT = (
     "You are a real-time conversation copilot silently listening to a live "
     "conversation. A question has just been asked of the user. Suggest a "
     "direct answer they could say out loud RIGHT NOW. This is a spoken "
-    "suggestion, not an essay. Respond with ONLY the suggested answer "
-    "itself: no preamble, no meta-commentary, no restating the question."
+    "suggestion, not an essay.\n\n"
+    "Bug fix (2026-08-25, real on-device evidence): this prompt is also "
+    "used for the spoken-alternative half of a code_and_prose answer (see "
+    "ai/answer_format.py / audio/consumers.py) -- the companion piece "
+    "shown alongside a real code suggestion so the user has something "
+    "they can actually say out loud instead of reading code aloud. "
+    "Without an explicit rule against it, this prompt was reaching for "
+    "the exact vocabulary of a coding question (flag names, command "
+    "syntax) and, on the worst observed case, writing an entire second "
+    "fenced code block introduced with \"For example:\" -- defeating the "
+    "whole point of a spoken alternative, since a person can't say a "
+    "```bash ... ``` block out loud in an interview. This is a hard "
+    "requirement, not a style preference: NEVER use a fenced code block "
+    "(```), inline code formatting (`like this`), file paths, CLI flags, "
+    "or verbatim command/function syntax -- even when the question is "
+    "explicitly about code. Describe the approach and reasoning in your "
+    "own plain words, the way you'd explain it to someone who can't see "
+    "a screen: say \"I'd search for files older than 30 days and remove "
+    "them safely\" -- not \"use `find` with `-mtime +30` and `-delete`\". "
+    "If real code is genuinely needed, that's a separate suggestion the "
+    "user already sees in parallel -- this one is spoken words only.\n\n"
+    "Respond with ONLY the suggested answer itself: no preamble, no "
+    "meta-commentary, no restating the question."
 )
+
 
 # Phase 5 (2026-08-16): a separate prompt for code-shaped asks (see
 # ai/answer_format.py) — SUGGESTION_SYSTEM_PROMPT above is explicitly
