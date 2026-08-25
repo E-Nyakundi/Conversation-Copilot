@@ -269,6 +269,33 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
     final url = _urlController.text.trim();
     if (url.isEmpty) return;
 
+    // Bug fix (2026-08-25, Danstan's real-device report): _msgSub/_errSub/
+    // _doneSub used to be assigned here unconditionally, every time
+    // _connect() ran. CopilotSocket's messages/errors/onDone streams are
+    // broadcast streams backed by StreamControllers that live for the
+    // whole CopilotSocket instance's lifetime (see socket.dart) — they
+    // persist across connect/disconnect cycles by design, but
+    // .listen() on a broadcast stream ADDS a subscriber, it doesn't
+    // replace one. _disconnect() below stops the mic and closes the WS
+    // channel, but was never responsible for cleaning up these three
+    // listeners either. Net effect: connect -> disconnect -> connect
+    // again left the FIRST connect's listeners still alive and still
+    // subscribed, so the second connect's new listeners stacked on top
+    // instead of replacing them — every message.listen callback
+    // (_handleMessage, the error handler, the onDone handler) then fired
+    // once per still-live listener. Confirmed on-device: reconnecting
+    // twice made every `final`/`suggestion` message get processed 3x,
+    // each transcript line and suggestion card appended that many
+    // times. Cancelling any existing subscriptions before creating new
+    // ones here (rather than only in dispose(), which only runs once
+    // for the whole widget's lifetime) is the actual fix — this is the
+    // one place a stale subscription can get created, so it's the one
+    // place that needs to guard against it, regardless of whether
+    // _disconnect() ran cleanly beforehand.
+    await _msgSub?.cancel();
+    await _errSub?.cancel();
+    await _doneSub?.cancel();
+
     setState(() => _status = 'Connecting...');
     try {
       await _socket.connect(url);
@@ -398,6 +425,15 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
   Future<void> _disconnect() async {
     if (_recording) await _mic.stop();
     await _socket.disconnect();
+    // Same cleanup as the top of _connect() above, done here too so a
+    // disconnected screen never has live listeners sitting on
+    // CopilotSocket's broadcast streams in the meantime — belt and
+    // braces alongside the _connect()-side guard, not a substitute for
+    // it (a hard app kill/reconnect-without-clean-disconnect path still
+    // needs _connect()'s own cancel-before-listen).
+    await _msgSub?.cancel();
+    await _errSub?.cancel();
+    await _doneSub?.cancel();
     setState(() {
       _connected = false;
       _recording = false;
