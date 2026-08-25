@@ -23,6 +23,20 @@ FRAME_SAMPLES = vad_module.FRAME_SAMPLES
 FRAME_BYTES = FRAME_SAMPLES * 2  # int16
 FRAME_DURATION_S = FRAME_SAMPLES / SAMPLE_RATE
 
+# Bug fix (2026-08-24, Phase F): static, non-generated spoken companion
+# used only when a CODE_AND_PROSE suggestion's prose half fails to
+# generate even after one retry (see _generate_suggestion below) — a
+# genuine dual-failure of both Groq and the local fallback for that one
+# call. Deliberately generic rather than trying to synthesize something
+# question-specific without a model: the goal here is just "never let a
+# code suggestion ship with literally no spoken companion," not to
+# replace the real generated alternative.
+_FALLBACK_SPOKEN_ANSWER = (
+    "(Spoken answer unavailable right now.) Talk through this yourself: "
+    "what the code does, why you wrote it this way, and any trade-offs "
+    "or edge cases worth mentioning."
+)
+
 
 class PingConsumer(AsyncWebsocketConsumer):
     """
@@ -97,7 +111,9 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
     # threshold (MIN_SILENCE_S floor + a bounded, completion-score-based
     # extension) instead of a single constant read once at class-body
     # eval time — see _process_frame. VAD_SILENCE_MS still controls the
-    # floor (default raised 600 -> 1000ms per Ed's decision), just via
+    # floor (default 800ms, since Danstan's 2026-08-24 request — was
+    # briefly raised 600 -> 1000ms per Ed's Phase C decision, see
+    # audio/completion_heuristic.py for that history), just via
     # completion_heuristic.MIN_SILENCE_S rather than a class attribute
     # here.
     MIN_SEGMENT_S = float(os.environ.get("MIN_SEGMENT_MS", "250")) / 1000.0
@@ -284,7 +300,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                 self.silence_tail_s += FRAME_DURATION_S
                 # Phase C: the fixed SILENCE_S threshold is replaced by
                 # an adaptive one — completion_tracker blends the raised
-                # floor (MIN_SILENCE_S, default 1000ms) with how much the
+                # floor (MIN_SILENCE_S, default 800ms) with how much the
                 # trailing audio actually looks like a real stopping
                 # point (RMS + speech-prob decay) versus a mid-thought
                 # pause, up to a bounded extension so an ambiguous tail
@@ -851,20 +867,56 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                     print(f"[suggest] extraction {extraction.id}: prose half failed: {prose_result!r}", flush=True)
                     prose_result = None
 
+                # Bug fix (2026-08-24, Phase F): a code-only suggestion
+                # reaching Ed live is never acceptable — same reasoning as
+                # the CODE->CODE_AND_PROSE fold above, it's just that this
+                # is the OTHER way a code suggestion could end up with no
+                # spoken companion: not the classifier routing it wrong,
+                # but the prose half of an already-correctly-routed
+                # CODE_AND_PROSE genuinely failing to generate. That was
+                # silently degrading to answer_format=CODE with
+                # secondary_text=None, which is exactly the "some already
+                # do that but some don't" gap Danstan reported — the
+                # classifier fix made routing consistent, but a live
+                # generation failure could still ship code with no oral
+                # alternative. get_suggestion() already tries Groq then
+                # the local model internally (see ai/cloud_router.py), so
+                # a raised exception here means BOTH already failed once —
+                # worth exactly one retry (transient hiccups, e.g. a
+                # single empty-response from reasoning-token exhaustion,
+                # are the common case per that module's own notes), but
+                # never worth blocking the whole suggestion on a second
+                # failure. If the retry also fails, fall back to a static,
+                # non-generated spoken prompt rather than nothing — Ed
+                # still gets *something* telling him to talk through the
+                # code himself, instead of a silent code-only suggestion.
+                if code_result and not prose_result:
+                    print(f"[suggest] extraction {extraction.id}: retrying prose half once", flush=True)
+                    try:
+                        prose_result = await asyncio.to_thread(
+                            get_suggestion, combined_question, context_turns, level, PROSE, knowledge_chunks
+                        )
+                    except Exception as e:
+                        print(f"[suggest] extraction {extraction.id}: prose retry failed: {e!r}", flush=True)
+                        prose_result = None
+
                 if not code_result and not prose_result:
                     raise RuntimeError("both code_and_prose generations failed")
 
-                # If one half genuinely failed, degrade gracefully to
-                # whichever succeeded rather than sending a suggestion
-                # with an empty half — same "best-effort" posture as the
-                # rest of this method.
+                # If one half genuinely failed (even after the retry
+                # above), degrade gracefully rather than aborting the
+                # whole suggestion — same "best-effort" posture as the
+                # rest of this method — but a failed PROSE half no longer
+                # means a bare CODE suggestion: _FALLBACK_SPOKEN_ANSWER
+                # (see module-level constant) guarantees a spoken
+                # companion ships every time code does, even when actual
+                # generation for it is unavailable.
                 if code_result and prose_result:
                     result = {"text": code_result["text"], "model": code_result.get("model", "")}
                     secondary_text = prose_result["text"]
                 elif code_result:
-                    answer_format = CODE
                     result = code_result
-                    secondary_text = None
+                    secondary_text = _FALLBACK_SPOKEN_ANSWER
                 else:
                     answer_format = PROSE
                     result = prose_result

@@ -238,9 +238,23 @@ QUESTION_PATTERNS = [
     #     "Keep receipts are required." is a barely-plausible false
     #     positive) for the same trade as cover/build/create. Evidence:
     #     "Keep it high level, but concrete."
+    # "tell me"/"walk through"/"give an example" widened to also accept
+    # "us" (2026-08-24, Danstan's real-session report): "Tell us about
+    # yourself." — a textbook interview opener — logged zero matches.
+    # The three phrase-anchors here were all hardcoded to the singular
+    # "me" (or no pronoun at all for "walk/talk through"'s optional
+    # group), but a real interviewer routinely speaks as "us" (panel/
+    # company, not themselves personally) — "Tell us about a challenging
+    # project...", "Walk us through your approach...", "Give us an
+    # example of that..." all produced `found 0 item(s)` the same way.
+    # Same evidence-first posture as every other verb added to this list:
+    # confirmed all three "us" phrasings have no plausible non-imperative
+    # reading, then widened just those three anchors to accept either
+    # pronoun rather than broadening the gate more than the evidence
+    # supports.
     (re.compile(
-        rf"^\s*{_SEQUENCE_PREFIX}(tell me|describe|explain|walk( me)? through|"
-        rf"talk( me)? through|give me an example|give an example|think about|"
+        rf"^\s*{_SEQUENCE_PREFIX}(tell (me|us)|describe|explain|walk( (me|us))? through|"
+        rf"talk( (me|us))? through|give (me|us) an example|give an example|think about|"
         rf"write (a|an|some)|implement|design|build|discuss|cover|sketch|keep|"
         rf"scale {_DET}|debug {_DET}|redesign {_DET}|refactor {_DET}|"
         rf"optimize|propose|migrate|extend|create|audit|benchmark|"

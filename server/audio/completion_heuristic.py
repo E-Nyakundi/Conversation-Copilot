@@ -47,10 +47,17 @@ import os
 import numpy as np
 
 # Config (env-overridable — see server/.env.example). Renamed the
-# underlying default from 600 to 1000 per Ed's explicit decision to
-# raise the floor; VAD_SILENCE_MS itself (read in consumers.py) now
-# represents this floor, not a fixed cutoff.
-MIN_SILENCE_S = float(os.environ.get("VAD_SILENCE_MS", "1000")) / 1000.0
+# underlying default from 600 to 1000 per Ed's original decision to
+# raise the floor (2026-08-23, Phase C); lowered again to 800 on
+# Danstan's explicit request (2026-08-24) — 1000ms was erring too far
+# toward "safe against premature answering" at the cost of felt latency
+# on ordinary short turns. The adaptive extension above this floor (see
+# effective_silence_threshold() below) is unchanged, so a pause that
+# genuinely looks mid-thought still gets the same bounded extra wait —
+# only the floor for a pause that already looks complete moved down.
+# VAD_SILENCE_MS itself (read in consumers.py) now represents this
+# floor, not a fixed cutoff.
+MIN_SILENCE_S = float(os.environ.get("VAD_SILENCE_MS", "800")) / 1000.0
 
 # Ceiling on the *adaptive* extension above the floor — without this, a
 # trailing pause that never looks "complete" (e.g. background noise

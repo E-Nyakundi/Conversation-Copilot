@@ -184,18 +184,37 @@ _PROSE_SIGNALS = re.compile(
 # write" (technical-but-still-oral framing) — a real gap, not an
 # overlapping case.
 #
-# Deliberately narrow, same posture as every other signal in this file:
-# only fires when the sentence's OWN governing verb is describe/explain/
-# walk-me-through and it's aimed at a build verb inside a relative
-# clause ("...you'd write", "...you would implement", "...you'd build").
-# Doesn't touch a bare "describe" with no downstream build verb (that
-# already falls through to plain PROSE with no technical anchor) or a
-# leading build verb with no describe/explain framing (still CODE, as
-# it should be — "write a function that reverses a linked list" is a
-# real code ask, not a description-of-a-script ask).
+# Bug fix (2026-08-24, Phase E): the Phase D regex above still missed a
+# second real prod turn (2801) -- STT transcribed the interviewer's
+# "...script you'd write..." as "...script you'd like to write...", and
+# a plain "you write" (no contraction) hits the same gap. The regex
+# hard-coded the specific build verb (write/implement/build/design/code)
+# as the token immediately after "you'd/you would/you will", so anything
+# that puts another word between "you" and the verb -- or drops the verb
+# entirely -- slips past the rule and falls straight through to the
+# build-verb+language CODE branch below.
+#
+# The signal never actually needed that specific verb: "describe/explain/
+# walk through" governing a script/program-shaped noun is already enough
+# on its own to mark this as an oral description, not a literal code
+# request -- regardless of what verb (if any) follows "you'd". Loosened
+# to fire on the describe/explain/walk-through frame plus a script/
+# program-shaped noun with "you" governing it somewhere after, no longer
+# anchored to one of five specific verbs. Still deliberately bounded
+# (same [^.?!]{0,N} clause-window posture as every other signal in this
+# file): a bare "describe" with no script/program noun still falls
+# through to plain PROSE with no technical anchor, and a leading build
+# verb with no describe/explain framing is still CODE, as it should be —
+# "write a function that reverses a linked list" is a real code ask, not
+# a description-of-a-script ask.
+_SCRIPT_SHAPED_NOUNS = (
+    r"(script|program|function|algorithm|class|module|application|app|"
+    r"system|service|api|endpoint|query|regex|component)"
+)
+
 _DESCRIBE_YOUR_APPROACH = re.compile(
     r"\b(describe|explain|walk( me)? through)\b[^.?!]{0,80}\b"
-    r"(you('d| would)|you will)\s+(write|implement|build|design|code)\b",
+    r"" + _SCRIPT_SHAPED_NOUNS + r"s?\b[^.?!]{0,60}\byou\b",
     re.IGNORECASE,
 )
 
@@ -225,6 +244,13 @@ def classify(question_text: str) -> str:
     longer returns straight CODE just because a build verb + language
     happen to sit inside the sentence's own subordinate clause — see
     _DESCRIBE_YOUR_APPROACH above for the real prod case this fixes.
+
+    Phase E (2026-08-24): _DESCRIBE_YOUR_APPROACH no longer requires one
+    of five specific build verbs immediately after "you'd/you would/you
+    will" — an STT mishearing ("you'd like to write") or a verbless
+    phrasing ("you write") used to escape the rule entirely. It now
+    fires on the describe/explain/walk-through frame plus any script/
+    program-shaped noun with "you" governing it, verb or no verb.
     """
     text = question_text or ""
 
