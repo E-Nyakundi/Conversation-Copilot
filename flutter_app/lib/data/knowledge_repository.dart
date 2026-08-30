@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../api_config.dart';
+import '../auth/auth_store.dart';
 import '../models/knowledge_document.dart';
 
 /// Client for knowledge/rest_views.py's /api/knowledge/documents/ surface
@@ -23,11 +24,25 @@ class KnowledgeRepository {
   Uri _documentUri(String id) =>
       Uri.parse('${ApiConfig.baseUrl}/api/knowledge/documents/$id/');
 
+  /// Multi-tenancy retrofit (2026-08-30): knowledge/rest_views.py now
+  /// gates this whole surface behind @staff_required (see that file's
+  /// comment — the FAISS index behind it is still a single global index,
+  /// not scoped per tenant, so it's locked to the deployment owner until
+  /// that's built properly). A non-staff tenant hitting any of these
+  /// calls gets a 403, surfaced as a normal KnowledgeRepositoryException
+  /// below — this repository doesn't hide that restriction from the UI,
+  /// callers should expect it as a real possible outcome, not just a
+  /// network hiccup.
+  Future<Map<String, String>> _authHeaders() async {
+    final token = await AuthStore.instance.readToken();
+    return {if (token != null) 'Authorization': 'Bearer $token'};
+  }
+
   /// GET /api/knowledge/documents/ -> list summaries, newest first
   /// (server already orders by -created_at and caps at 100 — no
   /// pagination needed client-side for that ceiling).
   Future<List<KnowledgeDocument>> fetchDocuments() async {
-    final response = await _client.get(_documentsUri());
+    final response = await _client.get(_documentsUri(), headers: await _authHeaders());
     if (response.statusCode != 200) {
       throw KnowledgeRepositoryException(
         'Failed to load knowledge base (${response.statusCode})',
@@ -45,7 +60,7 @@ class KnowledgeRepository {
   /// list — full text/chunks aren't needed until a document is actually
   /// opened.
   Future<KnowledgeDocument> fetchDocument(String id) async {
-    final response = await _client.get(_documentUri(id));
+    final response = await _client.get(_documentUri(id), headers: await _authHeaders());
     if (response.statusCode == 404) {
       throw KnowledgeRepositoryException('Document not found');
     }
@@ -73,7 +88,7 @@ class KnowledgeRepository {
     }
     final response = await _client.post(
       _documentsUri(),
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ...await _authHeaders()},
       body: jsonEncode({'title': title.trim(), 'text': trimmed}),
     );
     if (response.statusCode != 201) {
@@ -90,7 +105,7 @@ class KnowledgeRepository {
   /// knowledge/documents.py:delete_document — nothing extra needed here
   /// beyond the call itself).
   Future<void> deleteDocument(String id) async {
-    final response = await _client.delete(_documentUri(id));
+    final response = await _client.delete(_documentUri(id), headers: await _authHeaders());
     if (response.statusCode != 200) {
       throw KnowledgeRepositoryException(
         'Failed to delete document (${response.statusCode})',

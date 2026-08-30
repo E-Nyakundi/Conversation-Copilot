@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../auth/auth_repository.dart';
 import '../main.dart' show PingTestScreen;
 import '../theme.dart';
 import 'knowledge_base_screen.dart';
@@ -14,9 +15,17 @@ import 'knowledge_base_screen.dart';
 /// live_session_screen.dart's own field, unaffected by this screen for
 /// now) — wiring a shared config store is follow-up work.
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, this.showBackButton = true});
+  const SettingsScreen({super.key, this.showBackButton = true, this.onSignOut});
 
   final bool showBackButton;
+
+  /// Multi-tenancy retrofit (2026-08-30). Null when SettingsScreen is
+  /// reached somewhere that isn't the bottom-nav tab root (there is no
+  /// such call site today, but this keeps the constructor from forcing a
+  /// callback on every future usage) — the Account section simply omits
+  /// the sign-out row in that case rather than crash on a missing
+  /// callback.
+  final Future<void> Function()? onSignOut;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -27,6 +36,26 @@ enum _AnswerLengthDefault { quick, medium, detailed }
 class _SettingsScreenState extends State<SettingsScreen> {
   _AnswerLengthDefault _answerLength = _AnswerLengthDefault.medium;
   bool _diarization = true;
+
+  AuthUser? _account;
+  bool _accountLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAccount();
+  }
+
+  Future<void> _loadAccount() async {
+    final authRepository = AuthRepository();
+    final user = await authRepository.me();
+    authRepository.dispose();
+    if (!mounted) return;
+    setState(() {
+      _account = user;
+      _accountLoading = false;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -143,6 +172,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
+          const SectionLabel('Account'),
+          _AccountSection(
+            user: _account,
+            loading: _accountLoading,
+            onSignOut: widget.onSignOut == null
+                ? null
+                : () => _confirmSignOut(context, widget.onSignOut!),
+          ),
           const SectionLabel('Support'),
           CopilotGroup(
             children: [
@@ -187,6 +224,148 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
   }
+
+  Future<void> _confirmSignOut(
+    BuildContext context,
+    Future<void> Function() onSignOut,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: CopilotColors.panel,
+        title: const Text('Sign out?', style: TextStyle(color: CopilotColors.paper)),
+        content: const Text(
+          "You'll need your email and password to sign back in.",
+          style: TextStyle(color: CopilotColors.mist),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Sign out', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await onSignOut();
+    }
+  }
+}
+
+/// Account status + quota snapshot, matching the design doc's "the
+/// Flutter app checks quota state via /api/auth/me/" note. Sits as its
+/// own CopilotGroup rather than individual _SettingsRow entries because
+/// the usage figures need more room than a single-line row comfortably
+/// gives — this mirrors how the admin control room shows the same
+/// numbers, just read-only here.
+class _AccountSection extends StatelessWidget {
+  const _AccountSection({required this.user, required this.loading, this.onSignOut});
+
+  final AuthUser? user;
+  final bool loading;
+  final Future<void> Function()? onSignOut;
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const CopilotGroup(children: [
+        Padding(
+          padding: EdgeInsets.all(14),
+          child: Text('Loading account…', style: TextStyle(color: CopilotColors.mist)),
+        ),
+      ]);
+    }
+
+    final account = user;
+    if (account == null) {
+      return const CopilotGroup(children: [
+        Padding(
+          padding: EdgeInsets.all(14),
+          child: Text(
+            "Couldn't load account details.",
+            style: TextStyle(color: CopilotColors.mist),
+          ),
+        ),
+      ]);
+    }
+
+    final quota = account.quota;
+    return CopilotGroup(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(account.email, style: const TextStyle(color: CopilotColors.paper, fontSize: 14)),
+              if (quota != null) ...[
+                const SizedBox(height: 10),
+                _QuotaLine(
+                  label: 'Sessions',
+                  used: quota.sessionsUsed,
+                  max: quota.maxSessions,
+                ),
+                const SizedBox(height: 4),
+                _QuotaLine(
+                  label: 'Minutes',
+                  used: quota.minutesUsed.round(),
+                  max: quota.maxMinutes,
+                ),
+                if (!quota.isActive) ...[
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Access has been paused by the account owner.',
+                    style: TextStyle(color: Colors.redAccent, fontSize: 12),
+                  ),
+                ],
+              ],
+            ],
+          ),
+        ),
+        if (onSignOut != null)
+          _SettingsRow(
+            label: 'Sign out',
+            labelColor: Colors.redAccent,
+            onTap: () {
+              onSignOut!();
+            },
+          ),
+      ],
+    );
+  }
+}
+
+class _QuotaLine extends StatelessWidget {
+  const _QuotaLine({required this.label, required this.used, required this.max});
+
+  final String label;
+  final int used;
+  final int? max;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = max == null ? '$used used · unlimited' : '$used / $max used';
+    return Row(
+      children: [
+        SizedBox(
+          width: 70,
+          child: Text(label, style: const TextStyle(color: CopilotColors.mist, fontSize: 12)),
+        ),
+        Text(
+          text,
+          style: const TextStyle(
+            fontFamily: CopilotFonts.mono,
+            color: CopilotColors.paper,
+            fontSize: 12,
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _SettingsRow extends StatelessWidget {
@@ -198,6 +377,7 @@ class _SettingsRow extends StatelessWidget {
     this.trailing,
     this.disabled = false,
     this.onTap,
+    this.labelColor,
   });
 
   final String label;
@@ -207,6 +387,7 @@ class _SettingsRow extends StatelessWidget {
   final Widget? trailing;
   final bool disabled;
   final VoidCallback? onTap;
+  final Color? labelColor;
 
   @override
   Widget build(BuildContext context) {
@@ -224,7 +405,9 @@ class _SettingsRow extends StatelessWidget {
                     label,
                     style: TextStyle(
                       fontSize: 13.5,
-                      color: disabled ? CopilotColors.mist : CopilotColors.paper,
+                      color: disabled
+                          ? CopilotColors.mist
+                          : (labelColor ?? CopilotColors.paper),
                     ),
                   ),
                   if (sublabel != null)

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../audio/capture.dart';
+import '../auth/auth_store.dart';
 import '../theme.dart';
 import '../widgets/paced_code_reveal.dart';
 import '../ws/socket.dart';
@@ -266,8 +267,25 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
   }
 
   Future<void> _connect() async {
-    final url = _urlController.text.trim();
-    if (url.isEmpty) return;
+    final rawUrl = _urlController.text.trim();
+    if (rawUrl.isEmpty) return;
+
+    // Multi-tenancy retrofit (2026-08-30): accounts/ws_auth.py's
+    // TokenAuthMiddleware reads the token from a `?token=` query param
+    // on the WebSocket handshake — there's no header mechanism available
+    // on a client WebSocket connection the way there is for REST, so
+    // this is the one place in the app that has to build the URL by
+    // hand rather than just adding an Authorization header. A missing
+    // token still attempts to connect (rather than failing locally) so
+    // the server's real rejection (close code 4001, see
+    // audio/consumers.py's connect()) is what the user actually sees,
+    // consistent with how every other error in this method is surfaced.
+    final token = await AuthStore.instance.readToken();
+    final uri = Uri.parse(rawUrl);
+    final url = uri.replace(queryParameters: {
+      ...uri.queryParameters,
+      if (token != null) 'token': token,
+    }).toString();
 
     // Bug fix (2026-08-25, Danstan's real-device report): _msgSub/_errSub/
     // _doneSub used to be assigned here unconditionally, every time
@@ -303,6 +321,17 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
       _errSub =
           _socket.errors.listen((e) => setState(() => _status = 'Error: $e'));
       _doneSub = _socket.onDone.listen((_) {
+        // Multi-tenancy retrofit (2026-08-30): a rejected connection
+        // (see the 'error' case in _handleMessage) sends its JSON
+        // message and then closes the socket — onDone fires right after,
+        // and without this guard it would immediately overwrite the
+        // helpful "you're out of sessions" text with a generic
+        // "Disconnected." before the user ever gets to read it.
+        // _connected is already false by the time an 'error' message's
+        // handler runs, so checking it here is enough to distinguish
+        // "closed after a real rejection" from "closed after a normal,
+        // connected session".
+        if (!_connected) return;
         setState(() {
           _connected = false;
           _status = 'Disconnected.';
@@ -392,9 +421,37 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
       case 'session_ended':
         setState(() => _status = 'Session $_sessionId ended.');
         break;
+      case 'error':
+        // Multi-tenancy retrofit (2026-08-30): audio/consumers.py's
+        // connect() sends this (then closes with 4001/4003) when the
+        // token is missing/invalid or the account is inactive/out of
+        // quota — see TenantQuota.can_start_session()'s reason codes on
+        // the server. Mapped to plain language here rather than showing
+        // the raw reason string, since "sessions_exhausted" means
+        // nothing to someone who isn't reading the server code.
+        setState(() {
+          _connected = false;
+          _status = _describeErrorReason(data['reason'] as String?);
+        });
+        break;
       // 'extraction' messages also arrive (Phase 2) but aren't rendered
       // here yet, matching audio_test.html — revisit once there's a UI
       // spot for question/decision/objection/etc. badges.
+    }
+  }
+
+  String _describeErrorReason(String? reason) {
+    switch (reason) {
+      case 'authentication_required':
+        return "Couldn't connect: please sign in again.";
+      case 'account_inactive':
+        return 'Your access has been paused. Contact whoever set up your account.';
+      case 'sessions_exhausted':
+        return "You've used all your available sessions.";
+      case 'minutes_exhausted':
+        return "You've used all your available session time.";
+      default:
+        return 'Connection was refused by the server.';
     }
   }
 

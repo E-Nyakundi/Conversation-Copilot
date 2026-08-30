@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../api_config.dart';
+import '../auth/auth_store.dart';
 import '../models/session_summary.dart';
 
 /// Real persistence layer (2026-08-24), replacing the SessionSummary model's
@@ -31,7 +32,7 @@ class SessionRepository {
   /// of how much a given session recorded.
   Future<List<SessionSummary>> fetchSessions() async {
     final uri = Uri.parse('${ApiConfig.baseUrl}/api/sessions/');
-    final response = await _client.get(uri);
+    final response = await _client.get(uri, headers: await _authHeaders());
     if (response.statusCode != 200) {
       throw SessionRepositoryException(
         'Failed to load sessions (${response.statusCode})',
@@ -52,9 +53,10 @@ class SessionRepository {
     final suggestionsUri =
         Uri.parse('${ApiConfig.baseUrl}/api/sessions/$sessionId/suggestions/');
 
+    final headers = await _authHeaders();
     final responses = await Future.wait([
-      _client.get(detailUri),
-      _client.get(suggestionsUri),
+      _client.get(detailUri, headers: headers),
+      _client.get(suggestionsUri, headers: headers),
     ]);
     final detailResponse = responses[0];
     final suggestionsResponse = responses[1];
@@ -166,6 +168,18 @@ class SessionRepository {
     final minutes = ended.difference(started).inMinutes;
     if (minutes < 1) return '<1m';
     return '${minutes}m';
+  }
+
+  /// Multi-tenancy retrofit (2026-08-30): every request now carries
+  /// the bearer token (see accounts/auth.py's @token_required on the
+  /// server side) — a missing token here means the server 401s and
+  /// the response is surfaced as a normal SessionRepositoryException,
+  /// same as any other failure status. AppRoot is what actually keeps
+  /// this screen from being reachable while signed out, so this
+  /// method doesn't special-case a null token itself.
+  Future<Map<String, String>> _authHeaders() async {
+    final token = await AuthStore.instance.readToken();
+    return {if (token != null) 'Authorization': 'Bearer $token'};
   }
 
   void dispose() {

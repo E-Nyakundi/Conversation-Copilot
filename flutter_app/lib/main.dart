@@ -5,6 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'auth/auth_repository.dart';
+import 'auth/auth_store.dart';
+import 'auth/change_password_screen.dart';
+import 'auth/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/live_session_screen.dart';
 import 'screens/onboarding_screen.dart';
@@ -81,13 +85,23 @@ class _AppRootState extends State<AppRoot> {
   bool _onboarded = false;
   bool _loading = true;
 
+  // Multi-tenancy retrofit (2026-08-30): auth is now checked before
+  // onboarding, not instead of it — a returning, already-onboarded
+  // tenant who's still logged in skips straight to AppShell; a signed-out
+  // tenant (fresh install, or a token that stopped working — revoked,
+  // expired, cleared) sees LoginScreen first regardless of whether
+  // they've seen onboarding before. Onboarding and auth are independent
+  // one-time gates, checked in that order because there's no point
+  // showing product onboarding before establishing who's using the app.
+  AuthUser? _user;
+
   @override
   void initState() {
     super.initState();
-    _loadOnboardedFlag();
+    _loadInitialState();
   }
 
-  Future<void> _loadOnboardedFlag() async {
+  Future<void> _loadInitialState() async {
     bool onboarded = false;
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -97,9 +111,19 @@ class _AppRootState extends State<AppRoot> {
       // "not yet onboarded" rather than blocking app startup on this.
       onboarded = false;
     }
+
+    // me() returns null for both "no saved token" and "token no longer
+    // valid" — AppRoot treats those identically (show LoginScreen), see
+    // AuthRepository.me()'s docstring for why that's the deliberate
+    // choice here rather than trying to distinguish them.
+    final authRepository = AuthRepository();
+    final user = await authRepository.me();
+    authRepository.dispose();
+
     if (!mounted) return;
     setState(() {
       _onboarded = onboarded;
+      _user = user;
       _loading = false;
     });
   }
@@ -115,15 +139,33 @@ class _AppRootState extends State<AppRoot> {
     }
   }
 
+  void _handleSignedIn(AuthUser user) {
+    setState(() => _user = user);
+  }
+
+  Future<void> _handleSignedOut() async {
+    await AuthStore.instance.clear();
+    if (!mounted) return;
+    setState(() => _user = null);
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
       return const Scaffold(backgroundColor: CopilotColors.ink);
     }
+
+    final user = _user;
+    if (user == null) {
+      return LoginScreen(onSignedIn: _handleSignedIn);
+    }
+    if (user.mustChangePassword) {
+      return ChangePasswordScreen(onDone: _handleSignedIn);
+    }
     if (!_onboarded) {
       return OnboardingScreen(onDone: _markOnboarded);
     }
-    return const AppShell();
+    return AppShell(onSignOut: _handleSignedOut);
   }
 }
 
@@ -136,7 +178,9 @@ class _AppRootState extends State<AppRoot> {
 /// tab (via [_goToSettings]), so the one-tap access the mockup intended
 /// is preserved even though the navigation model around it changed.
 class AppShell extends StatefulWidget {
-  const AppShell({super.key});
+  const AppShell({super.key, required this.onSignOut});
+
+  final Future<void> Function() onSignOut;
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -167,7 +211,7 @@ class _AppShellState extends State<AppShell> {
       // "Connectivity test" row still pushes the Phase 0 ping harness
       // as a real route, which does want a back button).
       const SessionHistoryScreen(showBackButton: false),
-      const SettingsScreen(showBackButton: false),
+      SettingsScreen(showBackButton: false, onSignOut: widget.onSignOut),
     ];
 
     return Scaffold(
