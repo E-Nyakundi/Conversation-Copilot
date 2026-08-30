@@ -173,7 +173,7 @@ def build_identity_context(name: str, role: str, bio: str) -> str:
     )
 
 
-def get_system_prompt(answer_format: str = "prose") -> str:
+def get_system_prompt(answer_format: str = "prose", user=None) -> str:
     """
     Selects CODE_SYSTEM_PROMPT or SUGGESTION_SYSTEM_PROMPT for
     answer_format, then prepends identity context from UserProfile if one
@@ -208,14 +208,23 @@ def get_system_prompt(answer_format: str = "prose") -> str:
     placement identity context already uses, and covered by the same
     lookup/exception so a persona lookup failure degrades no
     differently than an identity lookup failure would.
+
+    Multi-tenancy retrofit (2026-08-30): UserProfile is no longer a
+    global singleton (see conversation/models.py), so `user` (the
+    session owner, an accounts.User) must be passed in to know whose
+    profile to load. user=None degrades to no identity/persona context
+    rather than falling back to some other user's profile.
     """
     base_prompt = CODE_SYSTEM_PROMPT if answer_format == "code" else SUGGESTION_SYSTEM_PROMPT
+
+    if user is None:
+        return base_prompt
 
     prefix = ""
     try:
         from conversation.models import UserProfile
 
-        profile = UserProfile.get_solo()
+        profile = UserProfile.get_for_user(user)
         if profile.is_populated():
             identity = build_identity_context(profile.name, profile.role, profile.bio)
             if identity:

@@ -4,6 +4,7 @@ from django.http import Http404, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
+from accounts.auth import staff_required
 from knowledge.documents import delete_document, ingest
 from knowledge.models import Document
 
@@ -20,6 +21,11 @@ def _document_summary(document: Document) -> dict:
 
 @require_http_methods(["GET", "POST"])
 @csrf_exempt
+@staff_required  # KNOWN LIMITATION, see knowledge/models.py Document docstring:
+                 # the FAISS index backing this is still global/unscoped, so this
+                 # endpoint is restricted to staff (the deployment owner) only
+                 # until per-tenant retrieval is built. Do not relax this to
+                 # token_required without also fixing the vector store.
 def documents_view(request):
     """
     GET  /api/knowledge/documents/  -> list uploaded documents, newest first
@@ -48,6 +54,7 @@ def documents_view(request):
 
 @require_http_methods(["GET", "DELETE"])
 @csrf_exempt
+@staff_required  # see documents_view's comment above — same global-index limitation
 def document_detail_view(request, document_id):
     """
     GET    /api/knowledge/documents/<id>/  -> a single document's full text + chunks

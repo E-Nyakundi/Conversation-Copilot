@@ -31,6 +31,12 @@ urlpatterns = [
     path("health/", health),
     path("api/", include("api.urls")),
     path("api/knowledge/", include("knowledge.urls")),
+    path("api/auth/", include("accounts.urls")),
+    # Custom admin API (multi-tenancy retrofit, 2026-08-30) — deliberately
+    # under /api/admin/ rather than /admin/api/ so it reads as part of the
+    # api/ surface, with its own auth (accounts.auth.staff_required, not
+    # Django's session-based admin.site auth above).
+    path("api/admin/", include("accounts.admin_urls")),
     # No-tunnel frontend (auto-connects to ws://<host>/ws/audio/, see
     # SETUP_NO_TUNNEL.md). This was previously undefined, so
     # http://localhost:8000/ 404'd and there was no way to reach

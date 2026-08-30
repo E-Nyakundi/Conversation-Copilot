@@ -19,6 +19,10 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "channels",
+    "accounts",  # Multi-tenancy retrofit (2026-08-30): custom User, AuthToken,
+                 # TenantQuota, UsageEvent — see accounts/models.py. Registered
+                 # before the apps below since Session/UserProfile now FK into
+                 # accounts.User.
     "audio",  # Phase 0/1: ping test + audio ingestion consumer
     "conversation",  # Phase 1: Session/Turn models (Phase 2+ will add manager/state/intent/memory here)
     "api",  # REST endpoints: session management, history
@@ -35,6 +39,12 @@ INSTALLED_APPS = [
                   # above, so the same "app exists but isn't registered"
                   # bug can't recur here.
 ]
+
+# Multi-tenancy retrofit (2026-08-30): must be set before the first
+# migration touching accounts.User runs. See accounts/models.py's User
+# docstring for why this is a custom model rather than the default
+# django.contrib.auth.User.
+AUTH_USER_MODEL = "accounts.User"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

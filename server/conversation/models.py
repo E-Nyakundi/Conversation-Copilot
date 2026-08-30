@@ -5,30 +5,28 @@ from django.db import models
 
 class UserProfile(models.Model):
     """
-    Phase 5 (2026-08-24): the app's primary-user identity — who the app is
-    representing when it suggests an answer. Ed's framing: the app isn't a
-    neutral assistant, it's meant to answer AS the user, in first person
-    ("tell us about yourself" should come back as the user's own
-    background, not a generic third-person description). Injected into
-    ai/prompts.py's suggestion prompt as fixed context once populated.
+    The app's primary-user identity — who the app is representing when it
+    suggests an answer. Ed's framing: the app isn't a neutral assistant,
+    it's meant to answer AS the user, in first person ("tell us about
+    yourself" should come back as the user's own background, not a
+    generic third-person description). Injected into ai/prompts.py's
+    suggestion prompt as fixed context once populated.
 
-    Deliberately a singleton, not a per-request-user table — this app has
-    no login/account system (see the build plan's Phase 3.5 "no login for
-    v1" decision) and is architected as one deployment, one user. Enforced
-    via a fixed primary key (`id=1` always) rather than a real uniqueness
-    constraint on some other field, since there's no natural unique field
-    to constrain on for a single free-form profile.
-
-    First-pass capture method (2026-08-24 decision): a Settings screen
-    text-entry section, not the conversational-interview or document-
-    upload flows Ed also described — those remain real future work, not
-    dropped, just not this pass's scope (see the build plan entry for the
-    full reasoning).
+    Multi-tenancy retrofit (2026-08-30): was a hardcoded singleton
+    (fixed pk=1) back when this app had no login/account system — see
+    git history for that version. Now one row per accounts.User via
+    `owner`, so each tenant gets their own persona/identity context
+    rather than sharing the single deployment-wide profile the old
+    design assumed. get_solo() is gone; use get_for_user(user) instead
+    — every caller (ai/prompts.py, api/rest_views.py,
+    knowledge/management/commands/regenerate_persona.py) was updated to
+    pass the request's user through rather than relying on an implicit
+    global.
     """
 
-    SINGLETON_ID = 1
-
-    id = models.IntegerField(primary_key=True, default=SINGLETON_ID, editable=False)
+    owner = models.OneToOneField(
+        "accounts.User", on_delete=models.CASCADE, related_name="profile", null=True
+    )
 
     name = models.CharField(max_length=150, blank=True)
     role = models.CharField(
@@ -68,16 +66,12 @@ class UserProfile(models.Model):
     )
     persona_summary_updated_at = models.DateTimeField(null=True, blank=True)
 
-    def save(self, *args, **kwargs):
-        # Enforce the singleton: always write to the same row regardless
-        # of what's passed in, so there's exactly one UserProfile ever.
-        self.pk = self.SINGLETON_ID
-        super().save(*args, **kwargs)
-
     @classmethod
-    def get_solo(cls) -> "UserProfile":
-        """Fetch the singleton row, creating an empty one on first access."""
-        obj, _created = cls.objects.get_or_create(pk=cls.SINGLETON_ID)
+    def get_for_user(cls, user) -> "UserProfile":
+        """Fetch this user's profile row, creating an empty one on first access —
+        same "empty profile is a normal state" behavior get_solo() used to
+        provide, just scoped per-owner now instead of globally."""
+        obj, _created = cls.objects.get_or_create(owner=user)
         return obj
 
     def is_populated(self) -> bool:
@@ -101,6 +95,17 @@ class Session(models.Model):
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # Multi-tenancy retrofit (2026-08-30): every session now belongs to a
+    # tenant. Nullable at the DB level only to make the migration onto
+    # existing data possible (see accounts/migrations for the backfill
+    # step that assigns pre-existing sessions to the first real user,
+    # then a follow-up migration tightens this to non-nullable) — every
+    # code path that creates a Session going forward must pass owner.
+    owner = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="sessions", null=True
+    )
+
     title = models.CharField(max_length=255, blank=True)
     mode = models.CharField(max_length=50, default="general")
 

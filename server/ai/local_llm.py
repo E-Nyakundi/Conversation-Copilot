@@ -65,6 +65,7 @@ class LocalLLM:
         level: str = DEFAULT_ANSWER_LEVEL,
         answer_format: str = "prose",
         knowledge_chunks: list[str] | None = None,
+        user=None,
     ) -> dict:
         """
         question: extracted question text to answer.
@@ -99,7 +100,7 @@ class LocalLLM:
         # silently drop identity context even though cloud_router.py's
         # primary path includes it — same bug class as answer_format's
         # original "don't let the fallback silently regress" rule.
-        system_prompt = get_system_prompt(answer_format)
+        system_prompt = get_system_prompt(answer_format, user=user)
 
         temperature = float(os.environ.get("LLM_TEMPERATURE", "0.4"))
 

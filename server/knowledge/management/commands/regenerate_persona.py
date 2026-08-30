@@ -24,10 +24,34 @@ class Command(BaseCommand):
             action="store_true",
             help="Skip the confirmation prompt (for non-interactive use, e.g. a deploy script).",
         )
+        parser.add_argument(
+            "--user-email",
+            default=None,
+            help="Which tenant's UserProfile to update (multi-tenancy retrofit, "
+            "2026-08-30 — the knowledge base itself is still global/owner-only, "
+            "see knowledge/models.py, but the persona summary it produces is "
+            "written onto a specific per-user UserProfile row now). Defaults to "
+            "the first superuser if omitted.",
+        )
 
     def handle(self, *args, **options):
+        from django.contrib.auth import get_user_model
+
         from conversation.models import UserProfile
         from knowledge.models import Document
+
+        User = get_user_model()
+        if options["user_email"]:
+            try:
+                target_user = User.objects.get(email__iexact=options["user_email"])
+            except User.DoesNotExist:
+                self.stderr.write(f"No user with email {options['user_email']!r}")
+                return
+        else:
+            target_user = User.objects.filter(is_superuser=True).order_by("id").first()
+            if target_user is None:
+                self.stderr.write("No superuser found — pass --user-email explicitly.")
+                return
 
         doc_count = Document.objects.count()
         if doc_count == 0:
@@ -55,7 +79,7 @@ class Command(BaseCommand):
             )
             return
 
-        profile = UserProfile.get_solo()
+        profile = UserProfile.get_for_user(target_user)
         profile.persona_summary = summary
         profile.persona_summary_updated_at = timezone.now()
         profile.save(update_fields=["persona_summary", "persona_summary_updated_at"])

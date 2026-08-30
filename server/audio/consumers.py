@@ -5,18 +5,22 @@ import os
 import time
 
 import numpy as np
+from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.utils import timezone
 
 from ai.prompts import DEFAULT_ANSWER_LEVEL, normalize_level
 from conversation import intent as intent_module
 from conversation.models import Extraction, Session, Suggestion, Turn
+from conversation.usage import finalize_session_usage
 
 from . import speaker as speaker_module
 from . import vad as vad_module
 from . import completion_heuristic as completion_module
 
 logger = logging.getLogger(__name__)
+
+_finalize_session_usage_async = database_sync_to_async(finalize_session_usage)
 
 SAMPLE_RATE = vad_module.SAMPLE_RATE
 FRAME_SAMPLES = vad_module.FRAME_SAMPLES
@@ -136,8 +140,32 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
     BACKPRESSURE_MAX_BACKLOG_S = float(os.environ.get("BACKPRESSURE_MAX_BACKLOG_MS", "2000")) / 1000.0
 
     async def connect(self):
+        # Multi-tenancy retrofit (2026-08-30): accounts.ws_auth's
+        # TokenAuthMiddleware (wrapping the WebSocket router in
+        # copilot/asgi.py) resolves ?token=<key> into self.scope["user"]
+        # before this method runs — None if missing/invalid. Reject here
+        # rather than in receive() so a bad/absent token never gets as
+        # far as accept()ing the connection at all.
+        user = self.scope.get("user")
+        if user is None:
+            await self.accept()  # must accept before close() can send a code+reason on some clients
+            await self.send(
+                text_data=json.dumps({"type": "error", "reason": "authentication_required"})
+            )
+            await self.close(code=4001)
+            return
+
+        quota = await self._get_quota(user)
+        allowed, reason = (False, "account_inactive") if quota is None else quota.can_start_session()
+        if not allowed:
+            await self.accept()
+            await self.send(text_data=json.dumps({"type": "error", "reason": reason}))
+            await self.close(code=4003)
+            return
+
+        self.user = user
         session_id = self.scope["url_route"]["kwargs"].get("session_id")
-        self.session = await self._get_or_create_session(session_id)
+        self.session = await self._get_or_create_session(session_id, user)
 
         self._pending = b""
         self.speech_active = False
@@ -198,6 +226,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             self.session.ended_at = timezone.now()
             try:
                 await self.session.asave()
+                await _finalize_session_usage_async(self.session)
             except Exception:
                 pass  # DB may be unavailable on shutdown; don't raise in disconnect
 
@@ -215,6 +244,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             await self._finalize_segment()  # flush anything in progress
             self.session.ended_at = timezone.now()
             await self.session.asave()
+            await _finalize_session_usage_async(self.session)
             await self.send(text_data=json.dumps({"type": "session_ended"}))
             await self.close()
             return
@@ -235,6 +265,19 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
     # -- audio pipeline -----------------------------------------------------
 
     async def _handle_audio_chunk(self, bytes_data: bytes):
+        # NOTE (2026-08-30 multi-tenancy retrofit): quota is checked once,
+        # at connect() time, not per-frame here. A session that started
+        # under quota can still run past max_minutes if it stays open long
+        # enough — enforcement of the *next* session start is airtight
+        # (can_start_session() in connect()), but a hard mid-session cutoff
+        # once minutes_used + this-session's-elapsed-time crosses
+        # max_minutes is NOT implemented yet. Deferred rather than bolted
+        # on quickly here because doing it safely means finalizing any
+        # in-progress segment and closing cleanly mid-stream, which
+        # touches the same state machine _finalize_segment/_process_frame
+        # already manage carefully — see the design doc's §6 for the
+        # intended approach (a periodic check every N frames) when this
+        # gets built.
         from stt.engine import pcm16_bytes_to_float32
 
         self._pending += bytes_data
@@ -852,8 +895,8 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                 # for it serially. Each is wrapped in to_thread since
                 # get_suggestion is a blocking call.
                 code_result, prose_result = await asyncio.gather(
-                    asyncio.to_thread(get_suggestion, combined_question, context_turns, level, CODE, knowledge_chunks),
-                    asyncio.to_thread(get_suggestion, combined_question, context_turns, level, PROSE, knowledge_chunks),
+                    asyncio.to_thread(get_suggestion, combined_question, context_turns, level, CODE, knowledge_chunks, self.session.owner),
+                    asyncio.to_thread(get_suggestion, combined_question, context_turns, level, PROSE, knowledge_chunks, self.session.owner),
                     return_exceptions=True,
                 )
                 # Either half can fail independently (a Groq hiccup on
@@ -894,7 +937,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                     print(f"[suggest] extraction {extraction.id}: retrying prose half once", flush=True)
                     try:
                         prose_result = await asyncio.to_thread(
-                            get_suggestion, combined_question, context_turns, level, PROSE, knowledge_chunks
+                            get_suggestion, combined_question, context_turns, level, PROSE, knowledge_chunks, self.session.owner
                         )
                     except Exception as e:
                         print(f"[suggest] extraction {extraction.id}: prose retry failed: {e!r}", flush=True)
@@ -923,7 +966,7 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
                     secondary_text = None
             else:
                 result = await asyncio.to_thread(
-                    get_suggestion, combined_question, context_turns, level, answer_format, knowledge_chunks
+                    get_suggestion, combined_question, context_turns, level, answer_format, knowledge_chunks, self.session.owner
                 )
                 secondary_text = None
         except asyncio.CancelledError:
@@ -1020,10 +1063,22 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
     # -- session lookup -------------------------------------------------
 
     @staticmethod
-    async def _get_or_create_session(session_id):
+    @database_sync_to_async
+    def _get_quota(user):
+        return getattr(user, "quota", None)
+
+    @staticmethod
+    async def _get_or_create_session(session_id, owner):
+        """
+        Multi-tenancy retrofit (2026-08-30): session_id resume is now
+        scoped to `owner` — looking up a session that exists but belongs
+        to a different tenant behaves exactly like "not found" (falls
+        through to creating a new one), rather than leaking another
+        tenant's session id/state to whoever guesses or reuses it.
+        """
         if session_id:
             try:
-                return await Session.objects.aget(pk=session_id)
+                return await Session.objects.aget(pk=session_id, owner=owner)
             except Session.DoesNotExist:
                 pass
-        return await Session.objects.acreate()
+        return await Session.objects.acreate(owner=owner)

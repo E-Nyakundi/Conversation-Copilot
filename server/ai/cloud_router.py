@@ -69,6 +69,7 @@ def _suggest_via_groq(
     level: str = DEFAULT_ANSWER_LEVEL,
     answer_format: str = "prose",
     knowledge_chunks: list[str] | None = None,
+    user=None,
 ) -> dict:
     """
     Raises on any Groq-side failure — get_suggestion() decides whether to
@@ -107,7 +108,7 @@ def _suggest_via_groq(
     # function's docstring in ai/prompts.py. Byte-identical to the old
     # CODE_SYSTEM_PROMPT/SUGGESTION_SYSTEM_PROMPT selection when no
     # profile exists yet.
-    system_prompt = get_system_prompt(answer_format)
+    system_prompt = get_system_prompt(answer_format, user=user)
 
     try:
         response = client.chat.completions.create(
@@ -152,6 +153,7 @@ def get_suggestion(
     level: str = DEFAULT_ANSWER_LEVEL,
     answer_format: str = "prose",
     knowledge_chunks: list[str] | None = None,
+    user=None,
 ) -> dict:
     """
     Public entry point — same signature and return shape as
@@ -175,7 +177,7 @@ def get_suggestion(
     """
     if os.environ.get("GROQ_API_KEY"):
         try:
-            return _suggest_via_groq(question, context_turns, level, answer_format, knowledge_chunks)
+            return _suggest_via_groq(question, context_turns, level, answer_format, knowledge_chunks, user=user)
         except Exception:
             logger.warning(
                 "Groq suggestion failed, falling back to local model",
@@ -186,4 +188,4 @@ def get_suggestion(
 
     from ai.local_llm import get_llm
 
-    return get_llm().suggest_answer(question, context_turns, level, answer_format, knowledge_chunks)
+    return get_llm().suggest_answer(question, context_turns, level, answer_format, knowledge_chunks, user=user)

@@ -12,11 +12,18 @@ class Document(models.Model):
     (knowledge/documents.py orchestrates all three), then retrieved into
     ai/prompts.py's suggestion prompts at generation time.
 
-    No FK to Session/UserProfile — deliberately global, not scoped per
-    session, matching the same "one deployment, one user" posture
-    UserProfile itself already established (see conversation/models.py).
-    A document uploaded once is available to every future session, not
-    just the one active when it was uploaded.
+    KNOWN LIMITATION (2026-08-30 multi-tenancy retrofit): still global,
+    NOT scoped per tenant. UserProfile and Session were retrofitted with
+    an `owner` FK in this same change; Document/Chunk deliberately were
+    not, because the underlying FAISS index (knowledge/vector_store.py)
+    is a single global on-disk index, not one per user — adding `owner`
+    here without also splitting or filtering that index would only
+    silently isolate the metadata while every tenant's documents remain
+    retrievable through the same shared vector search. That's a bigger
+    change (embeddings/retrieval/index-format, not just a model field)
+    and is explicitly deferred; see the design doc. Until it lands, do
+    NOT expose /api/knowledge/ to non-owner tenants — treat the
+    knowledge base as owner-only in any multi-tenant deployment.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
