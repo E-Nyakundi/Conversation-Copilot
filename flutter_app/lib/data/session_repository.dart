@@ -10,7 +10,7 @@ import '../models/session_summary.dart';
 /// previous `mockSessions` constant as the actual data source for
 /// Home/History/Session Detail. Talks to the REST endpoints already built
 /// server-side in api/rest_views.py (GET /api/sessions/,
-/// GET /api/sessions/<id>/, GET /api/sessions/<id>/suggestions/) — those
+/// GET /api/sessions/`<id>`/, GET /api/sessions/`<id>`/suggestions/) — those
 /// existed and were fully wired before this change; the gap being closed
 /// here is purely that nothing in the app called them yet.
 ///
@@ -44,7 +44,7 @@ class SessionRepository {
     return sessions.map(_summaryFromListJson).toList();
   }
 
-  /// GET /api/sessions/<id>/ + GET /api/sessions/<id>/suggestions/ ->
+  /// GET /api/sessions/`<id>`/ + GET /api/sessions/`<id>`/suggestions/ ->
   /// one SessionSummary with transcript populated (turns, each carrying
   /// its matching suggestion if the turn's question got one — matched by
   /// turn_id, same join the UI already expected from the old mock shape).

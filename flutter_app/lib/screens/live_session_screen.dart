@@ -11,7 +11,7 @@ import '../ws/socket.dart';
 
 /// Phase 1: the Flutter equivalent of server/audio_test.html — mic capture
 /// -> WebSocket -> live transcript, with Phase 3 suggestion bubbles layered
-/// in. Talks to AudioStreamConsumer at ws/audio/ (or ws/audio/<uuid>/ to
+/// in. Talks to AudioStreamConsumer at ws/audio/ (or ws/audio/`<uuid>`/ to
 /// resume a session).
 ///
 /// Phase 3.5/implementation: restyled to the instrument-panel visual

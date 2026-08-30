@@ -54,7 +54,7 @@ class KnowledgeRepository {
     return documents.map(_summaryFromJson).toList();
   }
 
-  /// GET /api/knowledge/documents/<id>/ -> full text + ordered chunks.
+  /// GET /api/knowledge/documents/`<id>`/ -> full text + ordered chunks.
   /// Separate from the list call for the same reason
   /// SessionRepository.fetchSessionDetail keeps detail separate from the
   /// list — full text/chunks aren't needed until a document is actually
@@ -100,7 +100,7 @@ class KnowledgeRepository {
     return _summaryFromJson(body);
   }
 
-  /// DELETE /api/knowledge/documents/<id>/ -> removes DB rows + the
+  /// DELETE /api/knowledge/documents/`<id>`/ -> removes DB rows + the
   /// document's vectors from the FAISS index (server-side, see
   /// knowledge/documents.py:delete_document — nothing extra needed here
   /// beyond the call itself).

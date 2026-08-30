@@ -233,7 +233,7 @@ class _AppShellState extends State<AppShell> {
 
 /// Phase 0 connectivity proof: mirrors server/latency_test.html's protocol
 /// against PingConsumer (server/audio/consumers.py). Client sends
-/// {"client_sent_at": <ms epoch>}, server echoes it with server-side
+/// {"client_sent_at": `<ms epoch>`}, server echoes it with server-side
 /// timestamps added. Round trip is computed entirely on this device's own
 /// clock (now - client_sent_at), so it's unaffected by any clock skew
 /// between phone and server.
