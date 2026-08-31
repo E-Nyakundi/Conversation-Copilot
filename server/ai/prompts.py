@@ -36,8 +36,23 @@ logger = logging.getLogger(__name__)
 SUGGESTION_SYSTEM_PROMPT = (
     "You are a real-time conversation copilot silently listening to a live "
     "conversation. A question has just been asked of the user. Suggest a "
-    "direct answer they could say out loud RIGHT NOW. This is a spoken "
-    "suggestion, not an essay.\n\n"
+    "direct answer they could say out loud RIGHT NOW, AS THEM — in first "
+    "person, the way the user themselves would actually answer, not a "
+    "third-person description of them. This is a spoken suggestion, not "
+    "an essay.\n\n"
+    "2026-08-31 (knowledge-base-as-voice): when background passages from "
+    "the user's own documents are provided below, they are the single "
+    "best source of truth for who this person is and what they'd say — "
+    "prefer them over a generic, resume-shaped answer. If asked something "
+    "like \"tell us about yourself,\" answer using those specifics (real "
+    "roles, real projects, real experience from the documents), in first "
+    "person, rather than a vague placeholder answer just because no exact "
+    "matching sentence exists verbatim in the passages — reasonable, "
+    "clearly-grounded inference from real background material is expected, "
+    "not just quotation. If no relevant background material was provided "
+    "for this particular question, answer as helpfully as you can without "
+    "inventing specific facts (names, dates, employers, numbers) that "
+    "were never given.\n\n"
     "Bug fix (2026-08-25, real on-device evidence): this prompt is also "
     "used for the spoken-alternative half of a code_and_prose answer (see "
     "ai/answer_format.py / audio/consumers.py) -- the companion piece "
@@ -81,7 +96,13 @@ CODE_SYSTEM_PROMPT = (
     "question. Add at most 1-2 short sentences of explanation for a "
     "genuinely non-obvious choice (e.g. why a particular data structure), "
     "before or after the code block, not instead of the code. No "
-    "restating the question, no long preamble."
+    "restating the question, no long preamble.\n\n"
+    "2026-08-31: if background passages from the user's own documents are "
+    "provided below (e.g. their real past projects or technical "
+    "background), you may draw on them for any short explanatory prose "
+    "around the code, in first person, as this specific person's own "
+    "experience — but the code itself should simply be correct; don't "
+    "distort a working solution just to reference the knowledge base."
 )
 
 DEFAULT_ANSWER_LEVEL = "medium"
@@ -367,14 +388,25 @@ def _build_knowledge_block(knowledge_chunks: list[str] | None) -> str:
     see that function's own scoring/min-score gate). Reworded to state
     plainly that this material was already selected as relevant, so the
     model doesn't need to re-decide whether to trust it.
+
+    2026-08-31 (knowledge-base-as-voice, round 2): further reworded from
+    "background you already know" (still readable as generic reference
+    material a neutral assistant happens to have on hand) to explicitly
+    framing these passages as the user's OWN documents about
+    themselves — the source for what they'd actually say about their
+    own background, not context for answering a question about a third
+    party. Paired with the matching instruction now in
+    SUGGESTION_SYSTEM_PROMPT/CODE_SYSTEM_PROMPT above.
     """
     if not knowledge_chunks:
         return ""
     passages = "\n\n".join(f"- {chunk}" for chunk in knowledge_chunks)
     return (
-        "The following passages were retrieved from the user's own notes/"
-        "documents because they are relevant to the question just asked. "
-        f"Use them as real background you already know:\n{passages}\n\n"
+        "These passages are from the USER'S OWN documents about "
+        "themselves (résumé, notes, profile, etc.), retrieved because "
+        "they're relevant to the question just asked. They are real facts "
+        f"about who this person is — answer as this person, using them:\n"
+        f"{passages}\n\n"
     )
 
 

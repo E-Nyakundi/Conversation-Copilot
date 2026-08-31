@@ -1,11 +1,11 @@
 {
-    "name": "flutter_app",
-    "short_name": "flutter_app",
+    "name": "Conversation Copilot",
+    "short_name": "Copilot",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#000000",
+    "theme_color": "#F5A623",
+    "description": "Conversation Copilot \u2014 real-time AI conversation assistance.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
