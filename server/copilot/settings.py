@@ -48,12 +48,27 @@ AUTH_USER_MODEL = "accounts.User"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "copilot.cors.CorsMiddleware",  # 2026-08-30: admin UI is a separate
+    # origin — must sit before CommonMiddleware/CsrfViewMiddleware so an
+    # OPTIONS preflight is answered here rather than 405/403ing.
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+]
+
+# 2026-08-30: exact origins allowed to call /api/* cross-origin from a
+# browser — the admin UI (copilot.cors.CorsMiddleware). Add your deployed
+# admin UI's origin here once it's hosted somewhere other than
+# localhost:3000. Read from an env var so this doesn't need a code change
+# per environment; comma-separated, matching DJANGO_ALLOWED_HOSTS's style
+# above.
+ADMIN_UI_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("ADMIN_UI_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
 ]
 
 ROOT_URLCONF = "copilot.urls"
