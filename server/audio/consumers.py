@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+from urllib.parse import parse_qs
 
 import numpy as np
 from channels.db import database_sync_to_async
@@ -165,7 +166,21 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
 
         self.user = user
         session_id = self.scope["url_route"]["kwargs"].get("session_id")
-        self.session = await self._get_or_create_session(session_id, user)
+        # Session onboarding (2026-08-31, build plan §14): title/mode come
+        # in as query params on the WS handshake, same channel as ?token=
+        # above — there's no pre-accept header mechanism on a client
+        # WebSocket, so this is the one place these have to travel as
+        # part of the URL rather than a first message. Only applied when
+        # actually creating a new session (see _get_or_create_session) —
+        # a resumed session (session_id present, already has its own
+        # title/mode from when it was first created) is never overwritten
+        # by whatever the reconnect happened to be called with.
+        query_params = parse_qs(self.scope.get("query_string", b"").decode())
+        title = (query_params.get("title") or [""])[0].strip()[:255]
+        mode = (query_params.get("mode") or ["general"])[0].strip()
+        if mode not in ("general", "coding", "no_code"):
+            mode = "general"
+        self.session = await self._get_or_create_session(session_id, user, title, mode)
 
         self._pending = b""
         self.speech_active = False
@@ -819,6 +834,26 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
 
         answer_format = classify(combined_question)
 
+        # Session onboarding (2026-08-31, build plan §14): a user can flag
+        # a session as "non-coding" up front (self.session.mode ==
+        # "no_code") at connect time — see _get_or_create_session. When
+        # that's set, a classifier verdict of CODE or CODE_AND_PROSE is
+        # forced down to PROSE. This is a hard override, not a soft nudge:
+        # the whole point of the session-level flag is "I already know
+        # this session won't have coding questions, don't show me code
+        # cards even if some sentence happens to trip the classifier."
+        # The reverse case ("coding" mode) is deliberately NOT a hard
+        # override the other way — a coding-focused session can still
+        # contain genuine behavioral/prose questions, and forcing every
+        # answer to CODE_AND_PROSE regardless of content would be wrong
+        # in a way the "no_code" case isn't (silence is a safe default;
+        # fabricating a code block for "tell me about a conflict you had"
+        # is not). "coding" mode is stored but NOT otherwise consumed yet
+        # — no prompt-side framing hint, no other behavior change. Left
+        # for a future pass if it turns out to matter in practice.
+        if self.session.mode == "no_code" and answer_format in (CODE, CODE_AND_PROSE):
+            answer_format = PROSE
+
         # Bug fix (2026-08-24, Phase D): this product is used live, in an
         # oral interview, spoken out loud — Ed's real prod feedback is
         # that a code-only suggestion "feels off," like the candidate is
@@ -1068,17 +1103,23 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         return getattr(user, "quota", None)
 
     @staticmethod
-    async def _get_or_create_session(session_id, owner):
+    async def _get_or_create_session(session_id, owner, title="", mode="general"):
         """
         Multi-tenancy retrofit (2026-08-30): session_id resume is now
         scoped to `owner` — looking up a session that exists but belongs
         to a different tenant behaves exactly like "not found" (falls
         through to creating a new one), rather than leaking another
         tenant's session id/state to whoever guesses or reuses it.
+
+        Session onboarding (2026-08-31, build plan §14): title/mode are
+        only used on the create path — a resumed existing session keeps
+        whatever it was already created with, since a reconnect's own
+        query params reflect the resuming client's current defaults, not
+        necessarily what the session should still be called.
         """
         if session_id:
             try:
                 return await Session.objects.aget(pk=session_id, owner=owner)
             except Session.DoesNotExist:
                 pass
-        return await Session.objects.acreate(owner=owner)
+        return await Session.objects.acreate(owner=owner, title=title, mode=mode)

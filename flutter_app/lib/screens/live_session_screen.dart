@@ -19,7 +19,8 @@ import '../ws/socket.dart';
 /// (status dot + level toggle) up top, transcript + suggestion cards in
 /// the middle, amplitude-ring mic control at the bottom. All WS/mic
 /// logic below is unchanged from the working test-harness version; only
-/// the build() method and a couple of small additions (connect sheet,
+/// the build() method and a couple of small additions (session onboarding
+/// sheet,
 /// ring pulse animation) are new.
 class LiveSessionScreen extends StatefulWidget {
   const LiveSessionScreen({super.key});
@@ -29,6 +30,30 @@ class LiveSessionScreen extends StatefulWidget {
 }
 
 enum _EntryKind { finalTurn, suggestion }
+
+/// Session onboarding (2026-08-31, build plan §14): matches
+/// conversation/models.py:Session.mode exactly — sent as the `mode` query
+/// param on the WS handshake (see _connect). `general` is the value a
+/// session gets if the user skips picking (matches the model's own
+/// default), so "didn't answer" and "answered general" are the same
+/// server-side state, not two different things to track.
+enum SessionMode {
+  general,
+  coding,
+  noCode;
+
+  String get wireValue => switch (this) {
+        SessionMode.general => 'general',
+        SessionMode.coding => 'coding',
+        SessionMode.noCode => 'no_code',
+      };
+
+  String get label => switch (this) {
+        SessionMode.general => 'Not sure / mixed',
+        SessionMode.coding => 'Coding questions expected',
+        SessionMode.noCode => 'No coding — behavioral / conceptual only',
+      };
+}
 
 /// Phase 4: Quick / Medium / Detailed answer-level switching. Values
 /// match the server's ai/prompts.py:ANSWER_LEVELS keys exactly — sent
@@ -95,9 +120,16 @@ class _TranscriptEntry {
 
 class _LiveSessionScreenState extends State<LiveSessionScreen>
     with SingleTickerProviderStateMixin {
-  final _urlController = TextEditingController(
-    text: 'wss://145-241-102-99.sslip.io/ws/audio/',
-  );
+  // Session onboarding (2026-08-31, build plan §14): the server URL used
+  // to be a field the user had to type into on every session start, even
+  // though it's not something a user could plausibly know or would ever
+  // want to change day-to-day — it's replaced here with a fixed constant.
+  // If a real "point at a different server" need shows up later (a debug
+  // build, a self-hosted deployment), that's a Settings-screen concern,
+  // not something to put back in front of every session start.
+  static const _serverUrl = 'wss://145-241-102-99.sslip.io/ws/audio/';
+  final _titleController = TextEditingController();
+  SessionMode _sessionMode = SessionMode.general;
   final _socket = CopilotSocket();
   final _mic = MicCapture();
   final _entries = <_TranscriptEntry>[];
@@ -267,9 +299,6 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
   }
 
   Future<void> _connect() async {
-    final rawUrl = _urlController.text.trim();
-    if (rawUrl.isEmpty) return;
-
     // Multi-tenancy retrofit (2026-08-30): accounts/ws_auth.py's
     // TokenAuthMiddleware reads the token from a `?token=` query param
     // on the WebSocket handshake — there's no header mechanism available
@@ -280,11 +309,21 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
     // the server's real rejection (close code 4001, see
     // audio/consumers.py's connect()) is what the user actually sees,
     // consistent with how every other error in this method is surfaced.
+    //
+    // Session onboarding (2026-08-31, build plan §14): title/mode ride
+    // along the same query-param channel as token, for the same reason
+    // (no pre-accept header mechanism on a client WebSocket) — see
+    // audio/consumers.py's connect() for the server side of this. Only
+    // meaningful on session creation; a resumed session (this screen
+    // doesn't currently do that, but the server-side contract already
+    // accounts for it) ignores them.
     final token = await AuthStore.instance.readToken();
-    final uri = Uri.parse(rawUrl);
+    final uri = Uri.parse(_serverUrl);
     final url = uri.replace(queryParameters: {
       ...uri.queryParameters,
       if (token != null) 'token': token,
+      'title': _titleController.text.trim(),
+      'mode': _sessionMode.wireValue,
     }).toString();
 
     // Bug fix (2026-08-25, Danstan's real-device report): _msgSub/_errSub/
@@ -501,61 +540,110 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
 
   void _toggleMic() {
     if (!_connected) {
-      _showConnectSheet();
+      _showSessionOnboardingSheet();
       return;
     }
     _recording ? _stopMic() : _startMic();
   }
 
-  void _showConnectSheet() {
+  /// Session onboarding (2026-08-31, build plan §14): replaces the old
+  /// "type a server URL, tap Connect, then separately tap the mic"
+  /// two-step. The server URL is no longer something the user enters at
+  /// all (see _serverUrl). What's collected here instead is what the
+  /// user actually has an opinion about: what to call this session, and
+  /// whether to expect code questions — then Start does connect + mic
+  /// start together, so tapping the mic control is the only action that
+  /// gets a live session going, same as it should have been from the
+  /// start.
+  void _showSessionOnboardingSheet() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: CopilotColors.panel,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (sheetContext) {
-        return Padding(
-          padding: EdgeInsets.fromLTRB(
-              20, 20, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text(
-                'Connect to server',
-                style: TextStyle(
-                  fontFamily: CopilotFonts.display,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 16,
-                  color: CopilotColors.paper,
-                ),
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                controller: _urlController,
-                style: const TextStyle(color: CopilotColors.paper, fontSize: 13),
-                decoration: InputDecoration(
-                  filled: true,
-                  fillColor: CopilotColors.panelRaised,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: BorderSide.none,
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            return Padding(
+              padding: EdgeInsets.fromLTRB(20, 20, 20,
+                  20 + MediaQuery.of(sheetContext).viewInsets.bottom),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'New session',
+                    style: TextStyle(
+                      fontFamily: CopilotFonts.display,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 16,
+                      color: CopilotColors.paper,
+                    ),
                   ),
-                  labelText: 'wss://.../ws/audio/',
-                  labelStyle: const TextStyle(color: CopilotColors.mist),
-                ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: _titleController,
+                    style:
+                        const TextStyle(color: CopilotColors.paper, fontSize: 13),
+                    decoration: InputDecoration(
+                      filled: true,
+                      fillColor: CopilotColors.panelRaised,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                      labelText: 'Session name (optional)',
+                      labelStyle: const TextStyle(color: CopilotColors.mist),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'What kind of session is this?',
+                    style: TextStyle(
+                      fontFamily: CopilotFonts.mono,
+                      fontSize: 11,
+                      color: CopilotColors.mist,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ...SessionMode.values.map(
+                    (mode) => RadioListTile<SessionMode>(
+                      value: mode,
+                      groupValue: _sessionMode,
+                      onChanged: (value) =>
+                          setSheetState(() => _sessionMode = value!),
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      activeColor: CopilotColors.paper,
+                      title: Text(
+                        mode.label,
+                        style: const TextStyle(
+                          color: CopilotColors.paper,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ElevatedButton(
+                    onPressed: () async {
+                      if (sheetContext.mounted) {
+                        Navigator.of(sheetContext).pop();
+                      }
+                      await _connect();
+                      // Getting rid of the old separate "now tap the mic"
+                      // step (see class-level doc comment) — Start here
+                      // means start, not just connect.
+                      await _startMic();
+                    },
+                    child: const Text('Start session'),
+                  ),
+                ],
               ),
-              const SizedBox(height: 14),
-              ElevatedButton(
-                onPressed: () async {
-                  await _connect();
-                  if (sheetContext.mounted) Navigator.of(sheetContext).pop();
-                },
-                child: const Text('Connect'),
-              ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
@@ -572,7 +660,7 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
     _doneSub?.cancel();
     _mic.dispose();
     _socket.dispose();
-    _urlController.dispose();
+    _titleController.dispose();
     _scrollController.dispose();
     _fullTranscriptScrollController.dispose();
     _ringController.dispose();
