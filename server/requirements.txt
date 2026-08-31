@@ -78,5 +78,14 @@ huggingface_hub<1.0
 sentence-transformers>=3.0,<4.0
 faiss-cpu>=1.8,<2.0
 
+# Onboarding knowledge upload (2026-08-31, build plan §15) — pypdf for
+# extracting plain text from an uploaded CV/LinkedIn/GitHub-profile PDF
+# (knowledge/pdf_extract.py). Pure-Python, no compiled extension, no
+# system libs (poppler etc.) required — deliberately chosen over
+# pdfplumber/PyMuPDF for that reason, since layout/table extraction
+# fidelity doesn't matter here (see pdf_extract.py's module docstring:
+# plain concatenated text is the whole scope).
+pypdf>=5.0,<6.0
+
 # Added in later phases — uncomment as you build them:
 # llama-cpp-python

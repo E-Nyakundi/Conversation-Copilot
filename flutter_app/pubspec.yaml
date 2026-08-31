@@ -40,6 +40,10 @@ dependencies:
   shared_preferences: ^2.3.3
   http: ^1.2.2
   flutter_secure_storage: ^9.2.2
+  # Onboarding knowledge upload (2026-08-31, build plan §15): lets the
+  # user pick a PDF (CV / LinkedIn / GitHub profile export) from the
+  # device's file system during onboarding.
+  file_picker: ^8.1.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

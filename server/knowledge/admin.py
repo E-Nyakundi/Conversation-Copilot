@@ -12,7 +12,8 @@ class ChunkInline(admin.TabularInline):
 
 @admin.register(Document)
 class DocumentAdmin(admin.ModelAdmin):
-    list_display = ("id", "title", "created_at")
+    list_display = ("id", "title", "owner", "created_at")
+    list_filter = ("owner",)
     inlines = [ChunkInline]
 
 

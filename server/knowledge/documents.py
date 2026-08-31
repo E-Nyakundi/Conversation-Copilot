@@ -16,7 +16,7 @@ from knowledge.chunking import chunk_text
 from knowledge.models import Chunk, Document
 
 
-def ingest(title: str, text: str) -> Document:
+def ingest(title: str, text: str, owner=None) -> Document:
     """
     Creates a Document, chunks its text, embeds every chunk, and adds
     them to the FAISS index — end to end, synchronous (upload requests
@@ -29,11 +29,18 @@ def ingest(title: str, text: str) -> Document:
     retrievable (see retrieve_context, which only ever queries FAISS,
     so an un-indexed Chunk simply can't be found — no separate "is this
     ready" check needed elsewhere).
+
+    owner (2026-08-31, build plan §15): attached to the Document row so
+    retrieve_context can later filter search hits down to a single
+    tenant's own chunks — see that function's docstring for why this
+    alone doesn't isolate retrieval; None is accepted (kept for the
+    staff/admin raw-text path, which still exists unscoped) but any
+    tenant-facing caller must pass the real owner.
     """
     from knowledge.embeddings import get_embedder
     from knowledge.vector_store import get_store
 
-    document = Document.objects.create(title=title, text=text)
+    document = Document.objects.create(title=title, text=text, owner=owner)
 
     pieces = chunk_text(text)
     if not pieces:
@@ -75,13 +82,32 @@ def _next_vector_id() -> int:
     return (highest + 1) if highest is not None else 0
 
 
-def retrieve_context(query: str, top_k: int | None = None) -> list[str]:
+def retrieve_context(query: str, owner=None, top_k: int | None = None) -> list[str]:
     """
     The one function ai/prompts.py actually calls (see that module's
     _build_knowledge_block / retrieve_knowledge_context). Embeds the
     query, searches the FAISS index, and returns the matching chunks'
     text — highest-relevance first — as a plain list of strings, no
     Chunk/Document objects leaked across the boundary.
+
+    Owner-scoping (2026-08-31, build plan §15): the FAISS index itself
+    (knowledge/vector_store.py) is still a single global index shared by
+    every tenant — there is no per-user index or namespace at the FAISS
+    layer, and building one is explicitly out of scope for this pass.
+    Isolation instead happens here, as a post-filter: search asks FAISS
+    for more candidates than top_k (see _OVERFETCH_FACTOR below), then
+    keeps only the hits whose Chunk belongs to `owner`, then truncates to
+    top_k. This means a search that happens to be dominated by other
+    tenants' documents can come back with fewer than top_k (or zero)
+    results even though the global index has plenty of matches overall —
+    that's the correct behavior (a user's suggestions must never be
+    grounded in someone else's CV), not a bug to "fix" by widening the
+    filter. owner=None deliberately returns an empty list rather than
+    the old "search everything" behavior — a caller that forgets to pass
+    owner gets silence, not another tenant's data; the only caller
+    allowed to search without an owner is the staff-only raw
+    document_detail_view path, which doesn't go through this function at
+    all (it reads a specific Document.chunks directly, not via search).
 
     Same "absence means silently unchanged" posture as
     build_identity_context in ai/prompts.py: an empty knowledge base (no
@@ -92,6 +118,8 @@ def retrieve_context(query: str, top_k: int | None = None) -> list[str]:
     UserProfile lookups.
     """
     if not query or not query.strip():
+        return []
+    if owner is None:
         return []
 
     try:
@@ -105,7 +133,18 @@ def retrieve_context(query: str, top_k: int | None = None) -> list[str]:
         store = get_store()
 
         query_vector = embedder.embed([query])[0]
-        hits = store.search(query_vector, top_k)
+        # Overfetch: since results get filtered down to one owner's
+        # chunks after the fact, asking FAISS for only top_k candidates
+        # would frequently starve the filter (e.g. top_k=3 but the 3
+        # nearest neighbors globally all belong to other tenants, even
+        # though this owner has a decent match at rank 8). A fixed
+        # multiplier is a simple, good-enough heuristic for this app's
+        # scale — not adaptive, not guaranteed to find every owned match
+        # in a very large shared index, but the shared index itself is
+        # already a known limitation (see module-level docstring).
+        _OVERFETCH_FACTOR = 8
+        raw_top_k = min(top_k * _OVERFETCH_FACTOR, store.index.ntotal or top_k)
+        hits = store.search(query_vector, raw_top_k)
 
         vector_ids = [vid for vid, score in hits if score >= min_score]
         if not vector_ids:
@@ -113,9 +152,15 @@ def retrieve_context(query: str, top_k: int | None = None) -> list[str]:
 
         # Preserve FAISS's relevance ordering — the DB query below has no
         # inherent order matching `hits`, so results are re-sorted against
-        # the original ranking rather than trusting queryset order.
-        chunks_by_id = {c.vector_index: c.text for c in Chunk.objects.filter(vector_index__in=vector_ids)}
-        return [chunks_by_id[vid] for vid in vector_ids if vid in chunks_by_id]
+        # the original ranking rather than trusting queryset order. Owner
+        # filter applied here, at the DB layer, since Chunk doesn't carry
+        # owner directly (Document does) — see Chunk.document.owner.
+        owned_chunks = Chunk.objects.filter(
+            vector_index__in=vector_ids, document__owner=owner
+        )
+        chunks_by_id = {c.vector_index: c.text for c in owned_chunks}
+        ordered = [chunks_by_id[vid] for vid in vector_ids if vid in chunks_by_id]
+        return ordered[:top_k]
     except Exception:
         import logging
 

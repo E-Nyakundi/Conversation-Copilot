@@ -921,7 +921,18 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             # base — see ai/prompts.py — so no separate try/except needed
             # here; None flows straight through to get_suggestion exactly
             # like "no knowledge base configured".
-            knowledge_chunks = await asyncio.to_thread(retrieve_knowledge_context, combined_question)
+            #
+            # owner=self.session.owner (2026-08-31, build plan §15): the
+            # FAISS index behind this is a single global index shared by
+            # every tenant — retrieve_context now requires an owner to
+            # return anything at all, filtering hits down to just this
+            # user's own uploaded documents. Omitting this here would
+            # silently zero out knowledge-base grounding for every
+            # session, not leak other tenants' data (see that function's
+            # docstring for why it fails closed rather than open).
+            knowledge_chunks = await asyncio.to_thread(
+                retrieve_knowledge_context, combined_question, self.session.owner
+            )
 
             if answer_format == CODE_AND_PROSE:
                 # Two independent generations, run concurrently rather

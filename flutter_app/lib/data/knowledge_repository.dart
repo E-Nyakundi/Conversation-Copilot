@@ -6,41 +6,35 @@ import '../api_config.dart';
 import '../auth/auth_store.dart';
 import '../models/knowledge_document.dart';
 
-/// Client for knowledge/rest_views.py's /api/knowledge/documents/ surface
-/// (Phase 6, 2026-08-24). Same shape and posture as SessionRepository:
-/// plain http.Client, ApiConfig.baseUrl for the host, a
-/// KnowledgeRepositoryException on any non-2xx response, dispose() to
-/// close the client.
+/// Client for knowledge/rest_views.py's tenant-facing
+/// /api/knowledge/my-documents/ surface (Phase 6, 2026-08-24; PDF support
+/// + owner-scoping added 2026-08-31, build plan §15). Same shape and
+/// posture as SessionRepository: plain http.Client, ApiConfig.baseUrl for
+/// the host, a KnowledgeRepositoryException on any non-2xx response,
+/// dispose() to close the client.
 ///
-/// Text-only for this pass, matching the backend's explicit scope call
-/// (knowledge/models.py:Document — "skip PDF parsing for this pass").
-/// Upload is a title + a text body, nothing else.
+/// Deliberately targets my-documents/ (owner-scoped, @token_required),
+/// NOT documents/ (staff-only, unscoped — see rest_views.py's comments on
+/// both). A regular tenant hitting documents/ would just get a 403; this
+/// repository is what any tenant-facing screen (onboarding's upload step,
+/// a future "manage your knowledge base" screen) should use instead.
 class KnowledgeRepository {
   KnowledgeRepository({http.Client? client}) : _client = client ?? http.Client();
 
   final http.Client _client;
 
-  Uri _documentsUri() => Uri.parse('${ApiConfig.baseUrl}/api/knowledge/documents/');
+  Uri _documentsUri() => Uri.parse('${ApiConfig.baseUrl}/api/knowledge/my-documents/');
   Uri _documentUri(String id) =>
-      Uri.parse('${ApiConfig.baseUrl}/api/knowledge/documents/$id/');
+      Uri.parse('${ApiConfig.baseUrl}/api/knowledge/my-documents/$id/');
 
-  /// Multi-tenancy retrofit (2026-08-30): knowledge/rest_views.py now
-  /// gates this whole surface behind @staff_required (see that file's
-  /// comment — the FAISS index behind it is still a single global index,
-  /// not scoped per tenant, so it's locked to the deployment owner until
-  /// that's built properly). A non-staff tenant hitting any of these
-  /// calls gets a 403, surfaced as a normal KnowledgeRepositoryException
-  /// below — this repository doesn't hide that restriction from the UI,
-  /// callers should expect it as a real possible outcome, not just a
-  /// network hiccup.
   Future<Map<String, String>> _authHeaders() async {
     final token = await AuthStore.instance.readToken();
     return {if (token != null) 'Authorization': 'Bearer $token'};
   }
 
-  /// GET /api/knowledge/documents/ -> list summaries, newest first
-  /// (server already orders by -created_at and caps at 100 — no
-  /// pagination needed client-side for that ceiling).
+  /// GET /api/knowledge/my-documents/ -> list the current user's own
+  /// documents, newest first (server already orders by -created_at and
+  /// caps at 100 — no pagination needed client-side for that ceiling).
   Future<List<KnowledgeDocument>> fetchDocuments() async {
     final response = await _client.get(_documentsUri(), headers: await _authHeaders());
     if (response.statusCode != 200) {
@@ -54,7 +48,7 @@ class KnowledgeRepository {
     return documents.map(_summaryFromJson).toList();
   }
 
-  /// GET /api/knowledge/documents/`<id>`/ -> full text + ordered chunks.
+  /// GET /api/knowledge/my-documents/`<id>`/ -> full text + ordered chunks.
   /// Separate from the list call for the same reason
   /// SessionRepository.fetchSessionDetail keeps detail separate from the
   /// list — full text/chunks aren't needed until a document is actually
@@ -73,11 +67,11 @@ class KnowledgeRepository {
     return _summaryFromJson(body, includeDetail: true);
   }
 
-  /// POST /api/knowledge/documents/ -> upload + synchronous
+  /// POST /api/knowledge/my-documents/ (JSON body) -> upload + synchronous
   /// chunk/embed/index (see knowledge/documents.py:ingest — the request
   /// doesn't return until indexing is done, so a 201 here means the
   /// document is immediately retrievable in the next suggestion, not
-  /// "queued").
+  /// "queued"). For pasted text/notes — for a PDF, use [uploadPdf] instead.
   Future<KnowledgeDocument> uploadDocument({
     required String text,
     String title = '',
@@ -100,7 +94,53 @@ class KnowledgeRepository {
     return _summaryFromJson(body);
   }
 
-  /// DELETE /api/knowledge/documents/`<id>`/ -> removes DB rows + the
+  /// Onboarding knowledge upload (2026-08-31, build plan §15): POST
+  /// /api/knowledge/my-documents/ as multipart/form-data with a `file`
+  /// field — a CV, a LinkedIn "Save to PDF" profile export, or a GitHub
+  /// profile page printed to PDF (see server-side knowledge/pdf_extract.py
+  /// for what's actually parsed out of it). Same synchronous
+  /// chunk/embed/index behavior as [uploadDocument] — a 201 means the
+  /// document is already retrievable, not queued for later processing.
+  Future<KnowledgeDocument> uploadPdf({
+    required List<int> bytes,
+    required String filename,
+    String title = '',
+  }) async {
+    final request = http.MultipartRequest('POST', _documentsUri());
+    request.headers.addAll(await _authHeaders());
+    if (title.trim().isNotEmpty) {
+      request.fields['title'] = title.trim();
+    }
+    request.files.add(
+      http.MultipartFile.fromBytes('file', bytes, filename: filename),
+    );
+
+    final streamed = await _client.send(request);
+    final response = await http.Response.fromStream(streamed);
+    if (response.statusCode != 201) {
+      // The server returns {"error": "..."} for a 400 (e.g. a
+      // password-protected or scanned/image-only PDF — see
+      // pdf_extract.py:PdfExtractError) — surface that message when
+      // present rather than just the status code, since it's actually
+      // actionable ("this PDF has no extractable text") in a way a bare
+      // "400" isn't.
+      String message = 'Failed to upload PDF (${response.statusCode})';
+      try {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final serverError = body['error'] as String?;
+        if (serverError != null && serverError.isNotEmpty) {
+          message = serverError;
+        }
+      } catch (_) {
+        // Non-JSON error body — fall back to the generic message above.
+      }
+      throw KnowledgeRepositoryException(message);
+    }
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    return _summaryFromJson(body);
+  }
+
+  /// DELETE /api/knowledge/my-documents/`<id>`/ -> removes DB rows + the
   /// document's vectors from the FAISS index (server-side, see
   /// knowledge/documents.py:delete_document — nothing extra needed here
   /// beyond the call itself).

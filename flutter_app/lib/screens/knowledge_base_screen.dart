@@ -11,13 +11,18 @@ import '../theme.dart';
 /// is the first way to actually get a document into it from the app,
 /// instead of the Django admin or a raw REST call.
 ///
-/// Deliberately modest scope, matching the backend's own scope call:
-/// paste-or-type text only, no PDF/file picker (knowledge/models.py's
-/// Document explicitly skips PDF parsing for this pass). List + upload +
-/// view + delete, no editing an existing document — mirrors
-/// SessionHistoryScreen's structure (search/list/detail-push pattern)
-/// since that's the closest existing precedent for a "list of things
-/// fetched from a REST endpoint" screen in this app.
+/// Deliberately modest scope, matching the backend's own original scope
+/// call: paste-or-type text upload here (no file picker on this screen).
+/// PDF upload (CV/LinkedIn/GitHub profile export — see
+/// knowledge/pdf_extract.py server-side) was added 2026-08-31 (build plan
+/// §15) but currently only through the onboarding flow's dedicated step
+/// (onboarding_screen.dart), not from this "manage your knowledge base"
+/// screen's upload sheet — extending _UploadSheet below with the same PDF
+/// picker is a reasonable follow-up but wasn't part of that session's
+/// scope. List + upload + view + delete, no editing an existing document
+/// — mirrors SessionHistoryScreen's structure (search/list/detail-push
+/// pattern) since that's the closest existing precedent for a "list of
+/// things fetched from a REST endpoint" screen in this app.
 ///
 /// Reachable from Settings (see settings_screen.dart's new "Knowledge
 /// base" row) rather than a fourth bottom-nav tab — matches the existing

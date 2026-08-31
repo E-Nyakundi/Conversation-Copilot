@@ -1,13 +1,25 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../data/knowledge_repository.dart';
 import '../theme.dart';
 
-/// First-run experience: welcome -> mic permission pre-prompt -> ready.
-/// Matches design/mockups/onboarding_mockup.html. Mic permission is not
-/// actually requested here yet (no permission_handler dependency in
-/// pubspec.yaml) — the "Allow microphone access" button just advances the
-/// flow for now. Wiring the real OS permission dialog is a follow-up once
-/// a permissions package is added; the pre-prompt UI/copy is final.
+/// First-run experience: welcome -> mic permission pre-prompt -> knowledge
+/// base upload -> ready. Matches design/mockups/onboarding_mockup.html for
+/// the first two and last steps. Mic permission is not actually requested
+/// here yet (no permission_handler dependency in pubspec.yaml) — the
+/// "Allow microphone access" button just advances the flow for now. Wiring
+/// the real OS permission dialog is a follow-up once a permissions package
+/// is added; the pre-prompt UI/copy is final.
+///
+/// Knowledge base step (2026-08-31, build plan §15): asks the user to
+/// upload a CV, LinkedIn profile PDF, or GitHub profile PDF so the
+/// suggestion engine has something to ground answers in before their
+/// first live session — see knowledge/pdf_extract.py server-side for what
+/// actually happens to the file. Optional and skippable like every other
+/// step (the existing top-right Skip button, and this step's own "Skip
+/// for now" secondary action) — a user with nothing to upload yet
+/// shouldn't be blocked from using the app.
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key, required this.onDone});
 
@@ -21,8 +33,57 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final _controller = PageController();
   int _step = 0;
 
+  // Knowledge base step state — lives here rather than inside
+  // _KnowledgeUploadStep so it survives page changes (PageView keeps its
+  // children alive by default, but state ownership at this level matches
+  // how the rest of this screen already keeps _step itself).
+  PlatformFile? _pickedFile;
+  bool _uploading = false;
+  String? _uploadError;
+  bool _uploaded = false;
+
+  Future<void> _pickFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return;
+    setState(() {
+      _pickedFile = result.files.single;
+      _uploadError = null;
+      _uploaded = false;
+    });
+  }
+
+  Future<void> _uploadPickedFile() async {
+    final file = _pickedFile;
+    if (file == null || file.bytes == null) return;
+    setState(() {
+      _uploading = true;
+      _uploadError = null;
+    });
+    final repository = KnowledgeRepository();
+    try {
+      await repository.uploadPdf(bytes: file.bytes!, filename: file.name);
+      if (!mounted) return;
+      setState(() {
+        _uploading = false;
+        _uploaded = true;
+      });
+    } on KnowledgeRepositoryException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _uploading = false;
+        _uploadError = e.message;
+      });
+    } finally {
+      repository.dispose();
+    }
+  }
+
   void _next() {
-    if (_step == 2) {
+    if (_step == 3) {
       widget.onDone();
       return;
     }
@@ -56,16 +117,24 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 ),
               ),
             ),
-            _ProgressDots(step: _step, count: 3),
+            _ProgressDots(step: _step, count: 4),
             Expanded(
               child: PageView(
                 controller: _controller,
                 physics: const NeverScrollableScrollPhysics(),
                 onPageChanged: (i) => setState(() => _step = i),
-                children: const [
-                  _WelcomeStep(),
-                  _MicPermissionStep(),
-                  _ReadyStep(),
+                children: [
+                  const _WelcomeStep(),
+                  const _MicPermissionStep(),
+                  _KnowledgeUploadStep(
+                    pickedFile: _pickedFile,
+                    uploading: _uploading,
+                    uploadError: _uploadError,
+                    uploaded: _uploaded,
+                    onPickFile: _pickFile,
+                    onUpload: _uploadPickedFile,
+                  ),
+                  const _ReadyStep(),
                 ],
               ),
             ),
@@ -78,6 +147,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   child: Text(switch (_step) {
                     0 => 'Continue',
                     1 => 'Allow microphone access',
+                    2 => (_uploaded || _pickedFile == null) ? 'Continue' : 'Skip for now',
                     _ => 'Go to Home',
                   }),
                 ),
@@ -287,6 +357,135 @@ class _MicPermissionStep extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _KnowledgeUploadStep extends StatelessWidget {
+  const _KnowledgeUploadStep({
+    required this.pickedFile,
+    required this.uploading,
+    required this.uploadError,
+    required this.uploaded,
+    required this.onPickFile,
+    required this.onUpload,
+  });
+
+  final PlatformFile? pickedFile;
+  final bool uploading;
+  final String? uploadError;
+  final bool uploaded;
+  final VoidCallback onPickFile;
+  final VoidCallback onUpload;
+
+  @override
+  Widget build(BuildContext context) {
+    return _StepScaffold(
+      hero: Container(
+        width: 96,
+        height: 96,
+        margin: const EdgeInsets.only(bottom: 24),
+        decoration: BoxDecoration(
+          color: CopilotColors.panel,
+          shape: BoxShape.circle,
+          border: Border.all(color: CopilotColors.hairline),
+        ),
+        child: const Icon(Icons.description_outlined, color: CopilotColors.amber, size: 34),
+      ),
+      eyebrow: 'Build your knowledge base',
+      title: const Text.rich(
+        TextSpan(children: [
+          TextSpan(text: 'Upload your '),
+          TextSpan(text: 'CV or profile', style: TextStyle(color: CopilotColors.amber)),
+        ]),
+      ),
+      description: 'A CV, a LinkedIn "Save to PDF" export, or a GitHub '
+          'profile page saved as a PDF all work. Copilot reads it once so '
+          'suggestions can be grounded in your actual background — '
+          'optional, and you can add more later.',
+      extra: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: CopilotColors.panel,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: CopilotColors.hairline),
+            ),
+            child: Column(
+              children: [
+                if (pickedFile == null)
+                  OutlinedButton.icon(
+                    onPressed: uploading ? null : onPickFile,
+                    icon: const Icon(Icons.upload_file, size: 16),
+                    label: const Text('Choose a PDF'),
+                  )
+                else ...[
+                  Row(
+                    children: [
+                      const Icon(Icons.picture_as_pdf, color: CopilotColors.amber, size: 18),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          pickedFile!.name,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 12.5, color: CopilotColors.paper),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (uploaded)
+                    const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.check_circle, color: CopilotColors.amber, size: 16),
+                        SizedBox(width: 6),
+                        Text(
+                          'Added to your knowledge base',
+                          style: TextStyle(fontSize: 12.5, color: CopilotColors.paper),
+                        ),
+                      ],
+                    )
+                  else
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: uploading ? null : onUpload,
+                        child: uploading
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Text('Upload'),
+                      ),
+                    ),
+                  if (uploadError != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      uploadError!,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 11.5, color: Colors.redAccent),
+                    ),
+                  ],
+                  if (!uploaded) ...[
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: uploading ? null : onPickFile,
+                      child: const Text(
+                        'Choose a different file',
+                        style: TextStyle(fontSize: 11.5, color: CopilotColors.mist),
+                      ),
+                    ),
+                  ],
+                ],
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

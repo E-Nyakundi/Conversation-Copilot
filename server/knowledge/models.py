@@ -1,5 +1,6 @@
 import uuid
 
+from django.conf import settings
 from django.db import models
 
 
@@ -12,21 +13,26 @@ class Document(models.Model):
     (knowledge/documents.py orchestrates all three), then retrieved into
     ai/prompts.py's suggestion prompts at generation time.
 
-    KNOWN LIMITATION (2026-08-30 multi-tenancy retrofit): still global,
-    NOT scoped per tenant. UserProfile and Session were retrofitted with
-    an `owner` FK in this same change; Document/Chunk deliberately were
-    not, because the underlying FAISS index (knowledge/vector_store.py)
-    is a single global on-disk index, not one per user — adding `owner`
-    here without also splitting or filtering that index would only
-    silently isolate the metadata while every tenant's documents remain
-    retrievable through the same shared vector search. That's a bigger
-    change (embeddings/retrieval/index-format, not just a model field)
-    and is explicitly deferred; see the design doc. Until it lands, do
-    NOT expose /api/knowledge/ to non-owner tenants — treat the
-    knowledge base as owner-only in any multi-tenant deployment.
+    Owner-scoping (2026-08-31, build plan §15): `owner` added so a
+    tenant's own uploads (CV, LinkedIn/GitHub profile PDFs — see
+    knowledge/pdf_extract.py) are attributable and filterable per-user.
+    Nullable for the same reason Session/UserProfile's owner is nullable
+    (see conversation/models.py's Session docstring) — makes the
+    migration onto any pre-existing global documents possible without a
+    forced backfill. The FAISS index itself is still one global index
+    (see knowledge/vector_store.py) — this field alone does NOT isolate
+    retrieval; knowledge/documents.py:retrieve_context is what actually
+    filters search hits down to a given owner's Chunks. Do not treat
+    this FK as sufficient isolation on its own.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="knowledge_documents",
+        null=True,
+    )
     title = models.CharField(max_length=255, blank=True)
     # Raw text as submitted — kept in full even though it's also split
     # into Chunks below, so re-chunking/re-embedding (e.g. after a

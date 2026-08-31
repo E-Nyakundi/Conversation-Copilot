@@ -302,7 +302,7 @@ def get_code_max_tokens(level):
     return CODE_MAX_TOKENS[level]
 
 
-def retrieve_knowledge_context(query: str) -> list[str] | None:
+def retrieve_knowledge_context(query: str, owner=None) -> list[str] | None:
     """
     Phase 6 (2026-08-24): the single place get_suggestion's callers
     would otherwise each have to import knowledge.documents themselves —
@@ -314,11 +314,21 @@ def retrieve_knowledge_context(query: str) -> list[str] | None:
     than raising, and None is treated identically to "no knowledge base
     configured" by _build_knowledge_block below — never a reason to fail
     the whole suggestion.
+
+    owner (2026-08-31, build plan §15): passed straight through to
+    knowledge.documents.retrieve_context, which now requires it to
+    return anything at all (a shared, unscoped FAISS index means
+    "search with no owner" is no longer a safe default — see that
+    function's docstring). Callers here MUST pass the session's actual
+    owner; omitting it silently returns an empty knowledge base rather
+    than erroring, so a caller that forgets this won't crash, but also
+    won't get any grounding — check the call site if suggestions seem
+    to be missing knowledge-base context that should be there.
     """
     try:
         from knowledge.documents import retrieve_context
 
-        return retrieve_context(query)
+        return retrieve_context(query, owner=owner)
     except Exception:
         logger.warning("Knowledge retrieval unavailable, degrading to no context", exc_info=True)
         return None
