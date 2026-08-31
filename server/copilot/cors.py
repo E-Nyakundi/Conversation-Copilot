@@ -19,7 +19,7 @@ misconfiguration that defeats the purpose of scoping this at all.
 """
 
 from django.conf import settings
-from django.http import HttpResponseNoContent
+from django.http import HttpResponse
 
 
 class CorsMiddleware:
@@ -36,7 +36,7 @@ class CorsMiddleware:
             # Authorization: Bearer header qualifies) — respond here
             # rather than letting it fall through to the real view, which
             # would otherwise 404/405 it.
-            response = HttpResponseNoContent()
+            response = HttpResponse(status=204)
         else:
             response = self.get_response(request)
 
