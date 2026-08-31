@@ -8,6 +8,7 @@ export default function UserRow({ user, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const q = user.quota;
 
   async function run(action) {
@@ -95,6 +96,36 @@ export default function UserRow({ user, onChanged }) {
           <button className="btn btn-ghost" onClick={() => setExpanded((v) => !v)}>
             {expanded ? "Hide" : "Details"}
           </button>
+          {confirmingDelete ? (
+            <>
+              <span className="confirm-label mono">delete permanently?</span>
+              <button
+                className="btn btn-danger"
+                disabled={busy}
+                onClick={() =>
+                  run(() => api.deleteUser(user.id)).finally(() => setConfirmingDelete(false))
+                }
+              >
+                Confirm
+              </button>
+              <button
+                className="btn btn-ghost"
+                disabled={busy}
+                onClick={() => setConfirmingDelete(false)}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              className="btn btn-danger-outline"
+              disabled={busy}
+              onClick={() => setConfirmingDelete(true)}
+              title="Permanently delete this user and all their data"
+            >
+              Delete
+            </button>
+          )}
         </div>
       </div>
 
@@ -169,6 +200,21 @@ export default function UserRow({ user, onChanged }) {
         .error {
           font-size: 12px;
           color: var(--danger);
+        }
+        .confirm-label {
+          font-size: 11px;
+          color: var(--danger);
+          align-self: center;
+          white-space: nowrap;
+        }
+        .btn-danger-outline {
+          background: transparent;
+          border: 1px solid var(--danger);
+          color: var(--danger);
+        }
+        .btn-danger-outline:hover:not(:disabled) {
+          background: var(--danger);
+          color: var(--bg-raised);
         }
 
         @media (max-width: 860px) {

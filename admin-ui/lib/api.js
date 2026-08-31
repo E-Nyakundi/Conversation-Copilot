@@ -82,6 +82,7 @@ export const api = {
     request(`/api/admin/users/${id}/quota/`, { method: "PATCH", body: patch }),
   revoke: (id) => request(`/api/admin/users/${id}/revoke/`, { method: "POST" }),
   reactivate: (id) => request(`/api/admin/users/${id}/reactivate/`, { method: "POST" }),
+  deleteUser: (id) => request(`/api/admin/users/${id}/delete/`, { method: "DELETE" }),
 };
 
 export { ApiError };

@@ -534,26 +534,25 @@ around it to polish.
 
 - [ ] Persist people, topics, numbers, dates, promises, Q&A pairs per session
 - [ ] Cross-session memory (recall from past conversations, if desired)
-- [x] **Open decision — user domain/expertise profile: resolved 2026-08-24.**
-  Decided as a real requirement, not deferred to Phase 9. Implemented as
-  `conversation.models.UserProfile` — a singleton (name/role/bio),
-  first-pass capture via a Settings-screen text-entry section (not the
-  conversational-interview or document-upload flows also discussed —
-  those remain future work). Injected into `ai/prompts.py`'s suggestion
-  prompt as fixed first-person identity context once populated
-  (`get_system_prompt`/`build_identity_context`), consumed identically
-  by both the Groq and local-fallback paths. REST surface at
-  `/api/profile/` (GET/PUT). Migration `0007_userprofile.py`. Revisit
-  once Phase 9 exists per the original note — this sets a per-user
-  default, Phase 9 would pick a mode per session.
+- [ ] **Open decision — user domain/expertise profile:** should the app
+  know what field the user is in (e.g. software engineering vs. sales
+  vs. teaching) and use that to shape suggestions — vocabulary,
+  assumed background knowledge, the kind of answer a domain expert
+  would actually give, not a generic one? Not yet decided whether this
+  is a real requirement or nice-to-have. If pursued, the natural home
+  is a simple stored user profile (field/role, maybe a short
+  free-text description) fed into `ai/prompts.py`'s suggestion prompt
+  as fixed context — a lighter version of what Phase 9's domain modes
+  do with prompt templates, but per-user rather than per-session-mode.
+  Revisit once Phase 9 exists, since the two overlap: Phase 9 picks a
+  mode per session, this would set a default based on who the user is.
 
 ### Phase 6 — Personal Knowledge Base (RAG)
 
-- [x] Document upload endpoint — **scoped down 2026-08-24, Ed's explicit call: text/notes only, skip PDF parsing.** `POST /api/knowledge/documents/` (`knowledge/rest_views.py`), body `{"title": "...", "text": "..."}`.
-- [x] Embedding + FAISS indexing pipeline — `knowledge/chunking.py` (paragraph-aware, char-capped, hard-split fallback), `knowledge/embeddings.py` (sentence-transformers, lazy singleton, default `all-MiniLM-L6-v2`), `knowledge/vector_store.py` (FAISS `IndexIDMap`+`IndexFlatIP`, persisted to `/data/knowledge_index.faiss`, same volume-backed-persistence pattern as `SQLITE_DB_PATH`), `knowledge/documents.py` (`ingest`/`retrieve_context`/`delete_document` orchestration). Migration `knowledge/migrations/0001_initial.py` (Document/Chunk). Admin registered. `reindex_knowledge` management command for full rebuilds (index-file loss, or an embedding-model change that changes vector dimension).
-- [x] Retrieval integrated into Phase 3's suggestion pipeline — `ai/prompts.py` gained `retrieve_knowledge_context()` + `_build_knowledge_block()`, both `build_suggestion_prompt`/`build_code_prompt` take an optional `knowledge_chunks` param (None/empty = byte-identical prompt to pre-Phase-6, same "absence means unchanged" contract as `build_identity_context`). Threaded through all three layers: `audio/consumers.py._generate_suggestion` → `ai/cloud_router.get_suggestion()` → `ai/local_llm.py`'s `suggest_answer()` — a Groq failure falling back to local generation doesn't silently lose knowledge-base grounding, same posture already applied to identity context. Both halves of the `CODE_AND_PROSE` concurrent-generation path get it too.
-- [x] Now that this runs server-side, indexing can be heavier/more accurate than the original mobile-constrained plan allowed — confirmed: `sentence-transformers`/`faiss-cpu` uncommented in `requirements.txt`, no mobile-side embedding work needed.
-- **Verification status — same honest caveat pattern as every other phase in this doc:** built and wired end-to-end this session (2026-08-24). `manage.py check` passes clean, `makemigrations --check` shows zero model/migration drift, and a real `migrate` against a throwaway sqlite DB applied `knowledge.0001_initial` successfully. **Not yet verified:** no real document has been uploaded/ingested/retrieved end-to-end (sentence-transformers/faiss-cpu aren't installed in this sandbox — deferred-import pattern means that's fine for `check`/`migrate` but real embedding/FAISS behavior is unverified), and no real Groq call has confirmed a knowledge-grounded suggestion actually reads sensibly with a real chunk injected ahead of conversation context. Next real step: install the two new deps on the VM, upload a real note via `/api/knowledge/documents/`, and confirm a live session's suggestion actually reflects it.
+- [ ] Document upload endpoint (PDF, text, notes)
+- [ ] Embedding + FAISS indexing pipeline
+- [ ] Retrieval integrated into Phase 3's suggestion pipeline
+- [ ] Now that this runs server-side, indexing can be heavier/more accurate than the original mobile-constrained plan allowed
 
 ### Phase 7 — Hybrid AI Router *(superseded — pulled forward into Phase 3 as of v4)*
 
@@ -787,43 +786,35 @@ Two new files, `flutter_app/lib/widgets/paced_code_reveal.dart` and `flutter_app
 - **Known simplification:** tapping to manually pause mid-character restarts the *next* character's full delay rather than resuming from a partial in-flight delay — imperceptible at the sub-100ms granularity most characters run at, same category of simplification already accepted in §12b for the old per-line version (which had the same restart-on-resume behavior, just at line granularity).
 - **Not yet done / not verified:** same standing caveat as every Flutter entry in this document — no Flutter toolchain in this sandbox, so this has been checked by hand for brace/paren balance and structural correctness (`_TypeStep`/script-building logic traced by hand against a few sample lines including a forced-typo case), not run through `flutter analyze` or a real build. The typo probability (4.5%), rhythm constants, and viewport height are informed estimates, not measured against a real device or Ed's actual reading/typing speed — next real step is the same device/emulator run already queued in §12b, now also checking whether the typing rhythm and typo frequency feel right, not just whether the timing is slow enough.
 
-## 14. Backfill — Phase C adaptive VAD, identity profile, Flutter session-data fix (2026-08-24)
+## 14. Session Notes — 2026-08-31: CORS fix, admin-UI punch list kickoff
 
-This document had drifted stale against the actual repo by the time this session started — three real, already-implemented threads existed in code with zero trace in this file. Recorded here rather than retroactively edited into §11/§12/§13 above, so the doc's own numbering stays sequential and honest about when each thread was actually discovered/written up.
+**Context note:** the prior chat session (same date) diagnosed a CORS login bug and discussed a 6-item admin-UI punch list, and its own summary claimed the build plan had been updated and the delete-user endpoint implemented — but the handoff bundle that followed didn't actually contain either change (this doc still ended at §13, and `accounts/admin_views.py` only had revoke/reactivate, no delete), and didn't include the `adminui` source at all yet. This entry is the real record, written against the actual code, with `adminui` now present.
 
-### 14a. Phase C — adaptive turn-finalization heuristic (`audio/completion_heuristic.py`, dated 2026-08-23)
+**CORS bug (already fixed, prior session, confirmed still in place):** custom `copilot.cors.CorsMiddleware` was rejecting the `OPTIONS` preflight from `http://localhost:3001` because `ADMIN_UI_ORIGINS` only listed `:3000` — Next.js had bumped ports after `:3000` was already in use locally. Resolved by going back to port 3000 locally; the underlying fix (widening `ADMIN_UI_ORIGINS` in prod env) is still worth double-checking is applied server-side for future port bounces.
 
-This is the real fix for the VAD-chunking bug §11a explicitly logged as "not yet addressed" — long prompts splitting mid-sentence across multiple turns, forcing "repeat that question" 2-3 times before a full sentence lands intact. It was built and wired into `consumers.py` in a session one day before this build plan's most recent prior entry, and never made it into the doc.
+**Six-item punch list agreed (from admin-control-room usage + a bug/feature discussion):**
+1. Delete user (admin can create users but never remove them)
+2. Remove the "enter server address, click connect" popup on mic-tap; server address becomes build-time/env config
+3. PDF/LinkedIn/CV upload → text extraction → existing knowledge-base ingest pipeline
+4. + 5. **Merged into one item, "session onboarding":** replaces the old connect popup entirely — one screen, triggered by the mic tap, collecting session name (optional) + an *extensible* output-format toggle (not just "no code" — `allowed_formats` on `Session`, so code/math/chemistry/etc. can each be gated independently later without new migrations)
+6. Two-tier contextual hints/coach-marks system: first-run items use a blocking modal dialog; ongoing/ambient hints use a small tooltip/popover anchored to their button/field. Both dismiss permanently on first view but are replayable later via a "show tips again" settings toggle — needs a `SeenHint(user, hint_key)` table, not a device-local flag.
 
-**Ed's decision, combining all three options rather than picking one:**
-1. Raise the floor: `VAD_SILENCE_MS` default 600 → 1000ms.
-2. Add a punctuation/prosody-style completion heuristic — real punctuation isn't available at finalization time (STT runs *after* a segment finalizes, not before, so waiting for a transcript would be circular), so the practical real-time proxy is trailing RMS (volume) decay combined with the VAD model's own trailing speech-probability trend (already computed per-frame for `is_speech()`, previously discarded rather than retained).
-3. Make the effective threshold adaptive per-turn — blends the completion score with raw silence duration: a high completion score lets a turn finalize close to the (raised) floor, a low score extends the wait, bounded by a hard ceiling (`VAD_ADAPTIVE_MAX_EXTENSION_MS`, default 1200ms) so a persistently ambiguous trailing pause still finalizes eventually rather than hanging forever.
+**Session-cap bug also diagnosed (separate from the 6-item list, found while reviewing `TenantQuota`):** `max_minutes`/`minutes_used` is currently a lifetime pool shared across all 10 sessions, not a per-session cap that resets. Agreed target model — three distinct time buckets:
+- **Real sessions:** 10 total (`max_sessions`/`sessions_used`, already correct, unchanged), each with its own 90-minute cap that resets fully every session (no rollover, no pooling)
+- **One-time onboarding tutorial:** unlimited/fixed length, doesn't touch the 10-session pool
+- **Bonus practice sessions:** earnable after a real session, also don't consume the 10-session pool
+- Implementation shape agreed: add a `session_minutes_cap` (default 90), enforced live in `audio/consumers.py`'s WS loop (warn near the end, auto-close at 90); repurpose/remove the account-wide `max_minutes` pooling since it's the actual root cause; add `is_tutorial=True` on `Session` for tutorial/practice rows, excluded from `TenantQuota.register_usage`/`can_start_session` checks. Not yet implemented — this is the design record only.
 
-New env vars: `VAD_SILENCE_MS` (1000, was 600), `VAD_ADAPTIVE_MAX_EXTENSION_MS` (1200), `VAD_TREND_WINDOW_FRAMES` (16) — all documented in `.env.example`.
+### 14a. Implemented this session (item 1 — delete user)
 
-**Drift bug found and fixed this session:** `.env.production.example` still had the pre-Phase-C `VAD_SILENCE_MS=600` and was missing the two new tunables entirely — a fresh prod setup from that template would silently get the old, less-adaptive behavior. Fixed (delivered separately as `server_envfix.zip`, now folded into this handoff's baseline). Same class of bug that previously bit the diarization rollout (`ENABLE_DIARIZATION=0` silently surviving a deploy) — the example file is a template, updating it doesn't touch a live VM's real `.env.production`, which needs the same check manually.
+- **Backend:** new `DELETE /api/admin/users/<id>/delete/` in `accounts/admin_views.py` (`admin_user_delete_view`), wired in `accounts/admin_urls.py`. Deliberately a distinct, explicitly-named endpoint from revoke/reactivate (which only flip `quota.is_active`) since this is a real, irreversible `user.delete()`. Blocks self-delete by comparing `user.pk == request.user.pk` (`request.user` is set by `@staff_required`/`@token_required` from the bearer token, per `accounts/auth.py`). Confirmed all relevant FKs/O2Os (`AuthToken`, `TenantQuota`, `UsageEvent`, `conversation.Session` and its `Turn`/`Extraction`/`Suggestion` children) are declared `on_delete=models.CASCADE`, so this cleanly cascades with no orphaned rows.
+- **Frontend (`adminui`, now included in the bundle for the first time):** `lib/api.js` gained `deleteUser(id)`. `app/components/UserRow.js` gained a `Delete` button (outlined danger style, distinct from the existing filled `Revoke`/`Reactivate` buttons) that switches to an inline "delete permanently? [Confirm] [Cancel]" state rather than a browser `confirm()` dialog, matching the app's existing inline-action pattern (no modals used elsewhere in this component). Confirm calls `api.deleteUser` through the same `run()` helper every other action already uses, so busy-state/error handling is consistent with the rest of the row.
+- **Verification status:** backend changes syntax-checked via `ast.parse` (no Django install in this sandbox, same limitation as every prior server-side entry that notes it). Frontend changes checked for brace/paren/bracket balance only — no Node/npm toolchain with JSX support available in this sandbox to run a real build or lint. CSS variables used (`--danger`, `--bg-raised`) already existed in `globals.css`, nothing new needed there. **Not yet run through a real `npm run dev`/`next build` or exercised against a live Django server** — next real step is Ed confirming the delete button actually renders and the endpoint round-trips against a real user in the admin UI.
 
-**Verification status:** the module is self-documenting about what's *not* yet validated — the RMS/speech-probability decay weights are a legitimate, well-established prosodic completion cue, not decorative window dressing, but they haven't been tuned against real audio yet. Not re-verified further in this session beyond confirming it's wired into `consumers.py` and not being duplicated by anything built here.
+### 14b. Next steps (pickup point)
 
-### 14b. Identity / `UserProfile` — now done server-side
-
-See §Phase 5's "open decision" entry above, now marked resolved — `conversation.models.UserProfile`, `ai/prompts.py`'s `build_identity_context`/`get_system_prompt`, `/api/profile/` REST endpoint, migration `0007_userprofile.py`. Confirmed present and complete as of this session; nothing to redo.
-
-### 14c. Flutter — real session data (`lib/data/session_repository.dart`)
-
-Home/History/Session Detail screens were still reading from `SessionSummary`'s `mockSessions` placeholder constant even though the server-side REST endpoints they needed (`GET /api/sessions/`, `GET /api/sessions/<id>/`, `GET /api/sessions/<id>/suggestions/`) had existed and been fully wired for a while — the gap was purely that nothing in the app called them yet. `SessionRepository` closes that gap: `fetchSessions()` for the list views, `fetchSessionDetail()` for a two-request split (turns + suggestions fetched separately, then merged client-side, matching what the server already exposes as two endpoints rather than one combined one — no server change needed for this first pass).
-
-Confirmed present and already in the package; nothing to redo. If this two-request split ever becomes a real latency problem, the natural fix is a combined endpoint server-side, not a Flutter-side workaround.
-
-### 14d. Verification note — §13 (real-time typing simulation)
-
-Ed confirmed live, on-device, this session: Phase 3.5, the paced-reveal/wake-lock work, and §13's typing-simulation rewrite are all working as designed. The "not yet verified on a real device" caveats attached to those entries above are resolved as of 2026-08-24 — flagging here rather than editing history into §12b/§13 themselves.
-
----
-
-## 15. Phase 6 implementation — knowledge base wired end-to-end (2026-08-24, this session)
-
-Continuing directly from where the prior session left off (mid-integration, threading `knowledge_chunks` through `ai/prompts.py` → `ai/cloud_router.py` → `ai/local_llm.py`, with `audio/consumers.py` wiring not yet started). See the Phase 6 checklist above (now updated in place) for the full built/verified breakdown — models, migration, chunking, embeddings, FAISS store, ingestion/retrieval orchestration, REST endpoints, admin, `reindex_knowledge` management command, and the full three-layer `knowledge_chunks` threading finished (including both halves of the `CODE_AND_PROSE` concurrent-generation path in `consumers.py`).
-
-`manage.py check` passes clean, `makemigrations --check` shows zero drift, and a real `migrate` against a throwaway sqlite DB applied `knowledge.0001_initial` successfully. Not yet verified: no real document has been ingested/retrieved end-to-end (sentence-transformers/faiss-cpu aren't installable in this sandbox), and no real Groq call has confirmed a knowledge-grounded suggestion reads sensibly. Next real step: install the two new deps on the VM, upload a real note via `/api/knowledge/documents/`, confirm a live session's suggestion reflects it.
+1. ~~Delete user~~ — done, see 14a, pending real-device/real-server confirmation
+2. Server-URL-to-buildtime + merged session onboarding screen (items 2+4+5) — not started
+3. PDF/CV/LinkedIn upload → knowledge-base ingest (item 3) — not started; known open flag from prior sessions: this touches the already-documented global (non-tenant-scoped) FAISS index limitation, worth a deliberate call on whether to fix that now or explicitly defer again
+4. Two-tier hints/coach-marks system (item 6) — not started, needs new `SeenHint` model + migration
+5. Session-cap fix (`session_minutes_cap`, live WS enforcement, `is_tutorial` flag, removing `max_minutes` pooling) — not started, design is fully locked per §14 above

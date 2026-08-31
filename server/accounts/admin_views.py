@@ -192,3 +192,32 @@ def admin_user_reactivate_view(request, user_id):
     user.quota.is_active = True
     user.quota.save(update_fields=["is_active", "updated_at"])
     return JsonResponse(_quota_summary(user.quota))
+
+
+@require_http_methods(["DELETE"])
+@csrf_exempt
+@staff_required
+def admin_user_delete_view(request, user_id):
+    """
+    DELETE /api/admin/users/<id>/delete/ -> permanently deletes the user.
+
+    Deliberately a separate, distinctly-named endpoint from revoke/
+    reactivate (which only flip quota.is_active) — this is a hard,
+    irreversible delete that cascades through AuthToken, TenantQuota,
+    UsageEvent, and every conversation.Session (and their Turns/
+    Extractions/Suggestions transitively), all of which are declared
+    CASCADE on their FK/O2O to User. There is no undo.
+
+    Self-delete is blocked: an admin acting on their own account here
+    would delete the very session making the request.
+    """
+    try:
+        user = User.objects.get(pk=user_id)
+    except (User.DoesNotExist, ValueError):
+        return JsonResponse({"error": "user not found"}, status=404)
+
+    if user.pk == request.user.pk:
+        return JsonResponse({"error": "cannot delete your own account"}, status=400)
+
+    user.delete()
+    return JsonResponse({"deleted": True, "id": user_id})

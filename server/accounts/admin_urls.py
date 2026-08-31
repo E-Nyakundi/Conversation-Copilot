@@ -12,4 +12,9 @@ urlpatterns = [
         admin_views.admin_user_reactivate_view,
         name="admin-user-reactivate",
     ),
+    path(
+        "users/<int:user_id>/delete/",
+        admin_views.admin_user_delete_view,
+        name="admin-user-delete",
+    ),
 ]

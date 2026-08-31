@@ -1,11 +1,29 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Release signing (2026-08-31, moving to production distribution):
+// reads android/key.properties, which is gitignored and never committed
+// (see .gitignore addition alongside this change) -- the actual
+// keystore file and its passwords must never enter version control,
+// since anyone holding them could sign a malicious app that looks like
+// a legitimate update to this one on a user's phone. This file simply
+// doesn't exist in this delivered zip; Ed generates it himself (see the
+// setup instructions accompanying this change) and it never leaves his
+// machine except into the keystore's own secure backup.
+val keystorePropertiesFile = rootProject.file("key.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+
 android {
-    namespace = "com.example.flutter_app"
+    namespace = "com.lenkra.conversationcopilot"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -15,21 +33,42 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.flutter_app"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
+        // Real application ID (2026-08-31) -- was the com.example.flutter_app
+        // placeholder, unchanged since project creation. This is permanent
+        // once real users install the app: changing it later is a new app
+        // install for them, not an update, so it's fixed now, before any
+        // production distribution.
+        applicationId = "com.lenkra.conversationcopilot"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = keystoreProperties["storeFile"]?.let { rootProject.file(it) }
+                storePassword = keystoreProperties["storePassword"] as String
+            }
+            // If key.properties doesn't exist (e.g. a fresh checkout before
+            // Ed has generated his keystore locally), this signingConfig
+            // ends up with null fields -- release builds will then fail
+            // with a clear Gradle signing error rather than silently
+            // falling back to the debug key, which is the mistake this
+            // whole change exists to fix.
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (keystorePropertiesFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
