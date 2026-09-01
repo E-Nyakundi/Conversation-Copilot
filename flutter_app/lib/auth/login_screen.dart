@@ -26,6 +26,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
   bool _busy = false;
   String? _error;
+  // Password visibility toggle -- defaults hidden (obscureText: true),
+  // same posture as before this change; the user opts into revealing it.
+  bool _passwordVisible = false;
 
   @override
   void dispose() {
@@ -121,13 +124,22 @@ class _LoginScreenState extends State<LoginScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                         child: TextFormField(
                           controller: _passwordController,
-                          obscureText: true,
+                          obscureText: !_passwordVisible,
                           autofillHints: const [AutofillHints.password],
                           style: const TextStyle(color: CopilotColors.paper),
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             labelText: 'Password',
                             border: InputBorder.none,
-                            labelStyle: TextStyle(color: CopilotColors.mist),
+                            labelStyle: const TextStyle(color: CopilotColors.mist),
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                _passwordVisible ? Icons.visibility_off : Icons.visibility,
+                                color: CopilotColors.mist,
+                                size: 20,
+                              ),
+                              tooltip: _passwordVisible ? 'Hide password' : 'Show password',
+                              onPressed: () => setState(() => _passwordVisible = !_passwordVisible),
+                            ),
                           ),
                           validator: (value) =>
                               (value == null || value.isEmpty) ? 'Required' : null,
@@ -158,11 +170,84 @@ class _LoginScreenState extends State<LoginScreen> {
                           )
                         : const Text('Sign in'),
                   ),
+                  const SizedBox(height: 22),
+                  const _InviteOnlyHint(),
                 ],
               ),
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Invite-only contact hint (2026-09-01): the very first screen a
+/// signed-out user sees had zero indication that this app doesn't have
+/// self-serve signup -- someone with no account and no context would
+/// just see a login form with nothing to do. Shown unconditionally
+/// below the sign-in form for every signed-out visit (not tied to the
+/// tour/onboarding system in tour/, which only starts running once
+/// there's an authenticated AppShell to walk through -- this has to work
+/// before any of that exists). Plain SelectableText rather than a
+/// tappable wa.me/mailto: link since url_launcher isn't already a
+/// dependency here and copy-paste is a fine fallback for a small,
+/// low-frequency screen.
+class _InviteOnlyHint extends StatelessWidget {
+  const _InviteOnlyHint();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: CopilotColors.panel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: CopilotColors.hairline),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.info_outline, size: 15, color: CopilotColors.blue),
+              const SizedBox(width: 8),
+              const Text(
+                "Don't have an account?",
+                style: TextStyle(
+                  fontFamily: CopilotFonts.display,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: CopilotColors.paper,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            "This app is invite-only. Reach out and I'll set one up for you:",
+            style: TextStyle(color: CopilotColors.mist, fontSize: 12, height: 1.4),
+          ),
+          const SizedBox(height: 8),
+          const SelectableText(
+            'WhatsApp: +254 797 554054',
+            style: TextStyle(
+              fontFamily: CopilotFonts.mono,
+              fontSize: 12,
+              color: CopilotColors.blue,
+            ),
+          ),
+          const SizedBox(height: 3),
+          const SelectableText(
+            'Email: e.nyakundilewis@gmail.com',
+            style: TextStyle(
+              fontFamily: CopilotFonts.mono,
+              fontSize: 12,
+              color: CopilotColors.blue,
+            ),
+          ),
+        ],
       ),
     );
   }

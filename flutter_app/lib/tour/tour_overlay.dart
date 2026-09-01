@@ -31,6 +31,18 @@ class TourOverlay extends StatefulWidget {
 }
 
 class _TourOverlayState extends State<TourOverlay> {
+  // See build()'s comment on the settle window: MaterialPageRoute's push
+  // transition (and other transient layout like a bottom sheet opening)
+  // can leave a target's RenderBox attached but mid-animation for a few
+  // frames after a step first becomes current -- re-measure for this
+  // many frames after a step change before trusting the rect as final.
+  // ~20 frames covers the default ~300ms Material page transition at a
+  // comfortable margin without re-measuring indefinitely on steps that
+  // never needed it.
+  static const _settleFrameBudget = 20;
+  String? _lastMeasuredStepId;
+  int _settleFramesRemaining = 0;
+
   @override
   void initState() {
     super.initState();
@@ -72,13 +84,35 @@ class _TourOverlayState extends State<TourOverlay> {
     // Rect resolved from the CURRENT frame's layout. If the target
     // widget isn't mounted yet (e.g. this tour step targets a screen
     // AppShell hasn't switched to on-screen yet), rect is null and only
-    // a dimmed barrier + the tip card (undocked, centered) render —
+    // a dimmed barrier + the tip card (undocked, centered) render --
     // still blocks interaction correctly, just without a spotlight
-    // cutout until the target actually lays out. A post-frame callback
-    // schedules one more rebuild so the cutout appears as soon as it can
-    // without the caller having to manage that timing itself.
+    // cutout until the target actually lays out.
+    //
+    // Bug fix (2026-09-01, live_session.mic spotlight landing on the
+    // wrong button): a rect isn't only wrong when null. When this step's
+    // target lives on a screen reached via Navigator.push (e.g.
+    // LiveSessionScreen), the pushed route's slide-in transition is
+    // still animating on the first several frames after the route
+    // mounts -- the target's RenderBox is attached and findRenderObject()
+    // succeeds, but localToGlobal(Offset.zero) reports a MID-TRANSITION
+    // position (composited through the route's still-animating
+    // transform), not its final resting position. The old code only
+    // scheduled a re-measure when rect was null, so it happily painted
+    // the spotlight at that transient, wrong position and never
+    // corrected it once a non-null rect came back. Solution: keep
+    // scheduling a post-frame re-measure for a short settle window after
+    // this step first becomes current, not just while rect is null, so
+    // the spotlight snaps to the real final position once the page
+    // transition (or any other transient layout, e.g. a bottom sheet
+    // opening) finishes.
     final rect = _targetRect(step.key);
-    if (rect == null) {
+    final isNewStep = step.id != _lastMeasuredStepId;
+    if (isNewStep) {
+      _lastMeasuredStepId = step.id;
+      _settleFramesRemaining = _settleFrameBudget;
+    }
+    if (rect == null || _settleFramesRemaining > 0) {
+      if (!isNewStep && _settleFramesRemaining > 0) _settleFramesRemaining--;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) setState(() {});
       });

@@ -65,8 +65,34 @@ class TourController extends ChangeNotifier {
   /// machinery (same step-by-step mechanism) after the mandatory pass is
   /// done, without that being "back in mandatory mode" — see
   /// [_replaying].
-  bool get isActive => (!_completed || _replaying) && _loaded;
+  ///
+  /// Bug fix (2026-09-01): also true when [hasUnseenSteps] -- an
+  /// already-`completed` install (e.g. an existing user who updated to a
+  /// build that added new tour content, like a login-screen tip or the
+  /// knowledge-base PDF step) previously stayed permanently past the
+  /// tour forever, since `completed` alone doesn't know the tour grew
+  /// new stops after that user's `_completed` flag was already set. New
+  /// content is what should re-trigger it, not a version bump that
+  /// forces the WHOLE tour to replay from scratch -- [_seenStepIds]
+  /// already tracks exactly which steps this install has walked past, so
+  /// [advance] below skips straight through anything already seen and
+  /// this only actually pauses the user at steps that are genuinely new.
+  bool get isActive => (!_completed || _replaying || hasUnseenSteps) && _loaded;
   bool _replaying = false;
+
+  /// True if any step across any screen in [screens] hasn't been marked
+  /// seen yet — see [isActive]'s doc comment. Checked against the full
+  /// step set, not just the current position, since a newly-added step
+  /// might live earlier in [screenOrder] than where a returning user's
+  /// stored `_screenIndex`/`_stepIndex` would otherwise resume from.
+  bool get hasUnseenSteps {
+    for (final screen in screens.values) {
+      for (final step in screen.steps) {
+        if (!_seenStepIds.contains(step.id)) return true;
+      }
+    }
+    return false;
+  }
 
   String? get currentScreenId =>
       _screenIndex < screenOrder.length ? screenOrder[_screenIndex] : null;
@@ -83,6 +109,18 @@ class TourController extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       _completed = prefs.getBool(_completedKey) ?? false;
       _seenStepIds = (prefs.getStringList(_seenStepsKey) ?? const []).toSet();
+      // If this install already finished the tour once but new steps
+      // have since shipped, start back at the beginning of screenOrder
+      // rather than wherever _screenIndex/_stepIndex happened to be left
+      // (always 0/0 after a normal completion, but defensive in case a
+      // future change ever persists a mid-tour position) -- advance()'s
+      // seen-step skip below will fast-forward through everything
+      // already seen and only actually stop at what's new.
+      if (_completed && hasUnseenSteps) {
+        _screenIndex = 0;
+        _stepIndex = 0;
+        _skipSeenSteps();
+      }
     } catch (_) {
       // Best-effort, same posture as main.dart's _markOnboarded: if this
       // read fails, the tour just runs again next cold start rather than
@@ -91,6 +129,37 @@ class TourController extends ChangeNotifier {
     }
     _loaded = true;
     notifyListeners();
+  }
+
+  /// Walks forward from the current position past any step that's
+  /// already in [_seenStepIds] AND doesn't require a task -- a returning
+  /// user re-entering the tour because of new content (see [load]'s
+  /// re-entry branch) shouldn't have to click Next through material
+  /// they've already sat through; this fast-forwards straight to the
+  /// first genuinely new (or task-gated -- always worth re-showing since
+  /// completing a task is a deliberate action, not passive reading) step.
+  /// A task-gated step is never skipped even if seen, since re-doing the
+  /// tour's one real action (e.g. actually tapping the mic) is cheap and
+  /// safer than assuming a past completion still holds.
+  void _skipSeenSteps() {
+    while (true) {
+      final step = currentStep;
+      if (step == null) return; // walked off the end of screenOrder
+      if (step.requiresTask || !_seenStepIds.contains(step.id)) return;
+
+      final steps = screens[currentScreenId]?.steps ?? const [];
+      if (_stepIndex + 1 < steps.length) {
+        _stepIndex++;
+      } else {
+        _screenIndex++;
+        _stepIndex = 0;
+        while (_screenIndex < screenOrder.length &&
+            (screens[screenOrder[_screenIndex]]?.steps.isEmpty ?? true)) {
+          _screenIndex++;
+        }
+      }
+      if (_screenIndex >= screenOrder.length) return;
+    }
   }
 
   /// Advances past the current step. If the current step

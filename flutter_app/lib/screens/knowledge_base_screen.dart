@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../data/knowledge_repository.dart';
@@ -11,15 +12,20 @@ import '../theme.dart';
 /// is the first way to actually get a document into it from the app,
 /// instead of the Django admin or a raw REST call.
 ///
-/// Deliberately modest scope, matching the backend's own original scope
-/// call: paste-or-type text upload here (no file picker on this screen).
-/// PDF upload (CV/LinkedIn/GitHub profile export — see
-/// knowledge/pdf_extract.py server-side) was added 2026-08-31 (build plan
-/// §15) but currently only through the onboarding flow's dedicated step
-/// (onboarding_screen.dart), not from this "manage your knowledge base"
-/// screen's upload sheet — extending _UploadSheet below with the same PDF
-/// picker is a reasonable follow-up but wasn't part of that session's
-/// scope. List + upload + view + delete, no editing an existing document
+/// Deliberately modest initial scope: paste-or-type text upload here (no
+/// file picker on this screen, initially). PDF upload (CV/LinkedIn/GitHub
+/// profile export — see knowledge/pdf_extract.py server-side) was added
+/// 2026-08-31 (build plan §15) but only through the onboarding flow's
+/// dedicated step (onboarding_screen.dart) at first.
+///
+/// 2026-09-01: extended to this screen too — a user who skipped the
+/// onboarding upload step, or who's on an existing account from before
+/// PDF upload existed at all, had no way to add a PDF later short of the
+/// paste-text workaround. _UploadSheet below now offers both text entry
+/// and a PDF picker (reusing KnowledgeRepository.uploadPdf, same as
+/// onboarding_screen.dart), so this is the one place either upload path
+/// is available regardless of how the account got its knowledge base
+/// started.
 /// — mirrors SessionHistoryScreen's structure (search/list/detail-push
 /// pattern) since that's the closest existing precedent for a "list of
 /// things fetched from a REST endpoint" screen in this app.
@@ -289,6 +295,29 @@ class _UploadSheetState extends State<_UploadSheet> {
   bool _submitting = false;
   String? _error;
 
+  // PDF upload (2026-09-01): same file_picker 12.x pattern as
+  // onboarding_screen.dart's _pickFile/_uploadPickedFile -- pickFile()
+  // returns PlatformFile? directly, and bytes are read on demand via
+  // readAsBytes() rather than a pick-time withData flag (removed in
+  // file_picker 12.x's federated rewrite).
+  PlatformFile? _pickedFile;
+
+  Future<void> _pickPdf() async {
+    final file = await FilePicker.pickFile(
+      type: FileType.custom,
+      allowedExtensions: ['pdf'],
+    );
+    if (file == null) return;
+    setState(() {
+      _pickedFile = file;
+      _error = null;
+    });
+  }
+
+  void _clearPickedFile() {
+    setState(() => _pickedFile = null);
+  }
+
   @override
   void dispose() {
     _titleController.dispose();
@@ -297,8 +326,9 @@ class _UploadSheetState extends State<_UploadSheet> {
   }
 
   Future<void> _submit() async {
-    if (_textController.text.trim().isEmpty) {
-      setState(() => _error = 'Paste or type some text first.');
+    final pickedFile = _pickedFile;
+    if (pickedFile == null && _textController.text.trim().isEmpty) {
+      setState(() => _error = 'Paste or type some text, or choose a PDF, first.');
       return;
     }
     setState(() {
@@ -306,10 +336,19 @@ class _UploadSheetState extends State<_UploadSheet> {
       _error = null;
     });
     try {
-      await widget.repository.uploadDocument(
-        title: _titleController.text,
-        text: _textController.text,
-      );
+      if (pickedFile != null) {
+        final bytes = await pickedFile.readAsBytes();
+        await widget.repository.uploadPdf(
+          bytes: bytes,
+          filename: pickedFile.name,
+          title: _titleController.text,
+        );
+      } else {
+        await widget.repository.uploadDocument(
+          title: _titleController.text,
+          text: _textController.text,
+        );
+      }
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } catch (e) {
@@ -369,22 +408,73 @@ class _UploadSheetState extends State<_UploadSheet> {
               ),
             ),
             const SizedBox(height: 10),
-            TextField(
-              controller: _textController,
-              enabled: !_submitting,
-              maxLines: 8,
-              minLines: 5,
-              style: const TextStyle(color: CopilotColors.paper, fontSize: 13),
-              decoration: const InputDecoration(
-                labelText: 'Text',
-                hintText: 'Paste notes, background info, reference material...',
-                labelStyle: TextStyle(color: CopilotColors.mist),
-                hintStyle: TextStyle(color: CopilotColors.mist),
-                filled: true,
-                fillColor: CopilotColors.panelRaised,
-                border: OutlineInputBorder(borderSide: BorderSide.none),
+            // PDF upload (2026-09-01): same file_picker choice as the
+            // onboarding flow's step -- offered as an alternative to the
+            // text field below, not alongside it (the "PASTE OR TYPE
+            // TEXT INSTEAD" divider below marks that split).
+            if (_pickedFile == null)
+              OutlinedButton.icon(
+                onPressed: _submitting ? null : _pickPdf,
+                icon: const Icon(Icons.upload_file, size: 16),
+                label: const Text('Choose a PDF'),
+              )
+            else
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: CopilotColors.panelRaised,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.picture_as_pdf, color: CopilotColors.amber, size: 18),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        _pickedFile!.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12.5, color: CopilotColors.paper),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: _submitting ? null : _clearPickedFile,
+                      icon: const Icon(Icons.close, size: 16, color: CopilotColors.mist),
+                      tooltip: 'Remove',
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                ),
               ),
-            ),
+            const SizedBox(height: 14),
+            if (_pickedFile == null) ...[
+              const Text(
+                'OR PASTE / TYPE TEXT INSTEAD',
+                style: TextStyle(
+                  fontFamily: CopilotFonts.mono,
+                  fontSize: 9.5,
+                  letterSpacing: 1,
+                  color: CopilotColors.mist,
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _textController,
+                enabled: !_submitting,
+                maxLines: 8,
+                minLines: 5,
+                style: const TextStyle(color: CopilotColors.paper, fontSize: 13),
+                decoration: const InputDecoration(
+                  labelText: 'Text',
+                  hintText: 'Paste notes, background info, reference material...',
+                  labelStyle: TextStyle(color: CopilotColors.mist),
+                  hintStyle: TextStyle(color: CopilotColors.mist),
+                  filled: true,
+                  fillColor: CopilotColors.panelRaised,
+                  border: OutlineInputBorder(borderSide: BorderSide.none),
+                ),
+              ),
+            ],
             if (_error != null) ...[
               const SizedBox(height: 10),
               Text(_error!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)),

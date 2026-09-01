@@ -25,6 +25,10 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
 
   bool _busy = false;
   String? _error;
+  // Password visibility toggles -- one per field so revealing "New
+  // password" doesn't also reveal "Confirm password" (or vice versa).
+  bool _passwordVisible = false;
+  bool _confirmVisible = false;
 
   @override
   void dispose() {
@@ -105,12 +109,21 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                         child: TextFormField(
                           controller: _passwordController,
-                          obscureText: true,
+                          obscureText: !_passwordVisible,
                           style: const TextStyle(color: CopilotColors.paper),
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             labelText: 'New password',
                             border: InputBorder.none,
-                            labelStyle: TextStyle(color: CopilotColors.mist),
+                            labelStyle: const TextStyle(color: CopilotColors.mist),
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                _passwordVisible ? Icons.visibility_off : Icons.visibility,
+                                color: CopilotColors.mist,
+                                size: 20,
+                              ),
+                              tooltip: _passwordVisible ? 'Hide password' : 'Show password',
+                              onPressed: () => setState(() => _passwordVisible = !_passwordVisible),
+                            ),
                           ),
                           validator: (value) => (value == null || value.length < 8)
                               ? 'At least 8 characters'
@@ -121,12 +134,21 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                         child: TextFormField(
                           controller: _confirmController,
-                          obscureText: true,
+                          obscureText: !_confirmVisible,
                           style: const TextStyle(color: CopilotColors.paper),
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             labelText: 'Confirm password',
                             border: InputBorder.none,
-                            labelStyle: TextStyle(color: CopilotColors.mist),
+                            labelStyle: const TextStyle(color: CopilotColors.mist),
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                _confirmVisible ? Icons.visibility_off : Icons.visibility,
+                                color: CopilotColors.mist,
+                                size: 20,
+                              ),
+                              tooltip: _confirmVisible ? 'Hide password' : 'Show password',
+                              onPressed: () => setState(() => _confirmVisible = !_confirmVisible),
+                            ),
                           ),
                           validator: (value) =>
                               (value == null || value.isEmpty) ? 'Required' : null,
