@@ -39,11 +39,23 @@ dependencies:
   wakelock_plus: ^1.2.8
   shared_preferences: ^2.3.3
   http: ^1.2.2
-  flutter_secure_storage: ^9.2.2
+  # Bumped from ^9.2.2 (2026-09-01, same session as the file_picker bump):
+  # file_picker >=12.0.0 requires win32 ^6.3.0 via its Windows plugin,
+  # which conflicts with flutter_secure_storage 9.x's Windows impl (pinned
+  # to win32 ^5.0.0). 10.x resolves cleanly against win32 6.x. Note: 10.0.0
+  # changed Android's cipher scheme -- AuthStore.readToken() already
+  # treats decrypt/read failures as "logged out" rather than crashing, so
+  # existing installed users will just be prompted to log in again once,
+  # not hit an error.
+  flutter_secure_storage: ^10.0.0
   # Onboarding knowledge upload (2026-08-31, build plan §15): lets the
   # user pick a PDF (CV / LinkedIn / GitHub profile export) from the
   # device's file system during onboarding.
-  file_picker: ^8.1.2
+  # Bumped from ^8.1.2 (2026-09-01, iOS-build session build failure):
+  # 8.x's file_picker AAR is compiled against android-34, which no longer
+  # satisfies flutter_plugin_android_lifecycle's compileSdk 36+ floor.
+  # 12.x ships an AAR built against a current SDK.
+  file_picker: ^12.1.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

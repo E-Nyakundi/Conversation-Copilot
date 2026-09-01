@@ -24,7 +24,18 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.lenkra.conversationcopilot"
-    compileSdk = flutter.compileSdkVersion
+    // Pinned explicitly rather than left as flutter.compileSdkVersion
+    // (2026-09-01, iOS-build session — real build failure on Windows):
+    // flutter_plugin_android_lifecycle (a transitive dep of file_picker)
+    // now requires compileSdk 36+, but the Flutter SDK's own default
+    // compileSdkVersion was still resolving to 34 on the machine that
+    // hit this. Pinning here means this project's Android build target
+    // no longer silently drifts with whatever Flutter SDK version
+    // happens to be installed locally -- it's an explicit, version-
+    // controlled decision instead. 36 satisfies the plugin's stated
+    // minimum; bump this again if a future plugin update raises the
+    // floor further.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

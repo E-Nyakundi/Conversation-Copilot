@@ -43,14 +43,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   bool _uploaded = false;
 
   Future<void> _pickFile() async {
-    final result = await FilePicker.platform.pickFiles(
+    // file_picker 12.x (2026-09-01 bump): FilePicker.platform and the
+    // nullable FilePickerResult wrapper are gone in the federated rewrite.
+    // pickFile() is the direct 12.x equivalent for a single-file pick --
+    // returns PlatformFile? instead of a result object wrapping a list.
+    // withData/bytes no longer exist as pick-time options -- 12.x reads
+    // bytes on demand via PlatformFile.readAsBytes() instead (see
+    // _uploadPickedFile below), so there's nothing to request up front.
+    final file = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
-      withData: true,
     );
-    if (result == null || result.files.isEmpty) return;
+    if (file == null) return;
     setState(() {
-      _pickedFile = result.files.single;
+      _pickedFile = file;
       _uploadError = null;
       _uploaded = false;
     });
@@ -58,14 +64,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   Future<void> _uploadPickedFile() async {
     final file = _pickedFile;
-    if (file == null || file.bytes == null) return;
+    if (file == null) return;
     setState(() {
       _uploading = true;
       _uploadError = null;
     });
     final repository = KnowledgeRepository();
     try {
-      await repository.uploadPdf(bytes: file.bytes!, filename: file.name);
+      // file_picker 12.x: PlatformFile.bytes is gone -- readAsBytes()
+      // is the async replacement, and works whether the picker cached
+      // the file's bytes or only a local path/stream.
+      final bytes = await file.readAsBytes();
+      await repository.uploadPdf(bytes: bytes, filename: file.name);
       if (!mounted) return;
       setState(() {
         _uploading = false;
