@@ -26,7 +26,7 @@ export default function UserRow({ user, onChanged }) {
 
   const status = !q?.is_active
     ? "revoked"
-    : q?.sessions_remaining === 0 || q?.minutes_remaining === 0
+    : q?.sessions_remaining === 0
     ? "exhausted"
     : "active";
 
@@ -51,12 +51,6 @@ export default function UserRow({ user, onChanged }) {
             max={q?.max_sessions ?? null}
             unit=""
           />
-          <UsageMeter
-            label="Minutes"
-            used={q?.minutes_used ?? 0}
-            max={q?.max_minutes ?? null}
-            unit="min"
-          />
         </div>
 
         <div className="actions">
@@ -67,14 +61,6 @@ export default function UserRow({ user, onChanged }) {
             title="Grant 5 more sessions"
           >
             +5 sess
-          </button>
-          <button
-            className="btn"
-            disabled={busy}
-            onClick={() => run(() => api.adjustQuota(user.id, { minutes_delta: 60 }))}
-            title="Grant 60 more minutes"
-          >
-            +60 min
           </button>
           {q?.is_active ? (
             <button

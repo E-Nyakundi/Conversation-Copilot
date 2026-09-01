@@ -220,7 +220,7 @@ function summarize(users) {
     const q = u.quota;
     if (!q?.is_active) {
       revoked++;
-    } else if (q.sessions_remaining === 0 || q.minutes_remaining === 0) {
+    } else if (q.sessions_remaining === 0) {
       exhausted++;
     } else {
       active++;

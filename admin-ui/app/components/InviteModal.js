@@ -6,7 +6,6 @@ import { api, ApiError } from "../../lib/api";
 export default function InviteModal({ onClose, onCreated }) {
   const [email, setEmail] = useState("");
   const [maxSessions, setMaxSessions] = useState("10");
-  const [maxMinutes, setMaxMinutes] = useState("120");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
@@ -18,8 +17,7 @@ export default function InviteModal({ onClose, onCreated }) {
     try {
       const res = await api.inviteUser(
         email,
-        maxSessions === "" ? null : parseInt(maxSessions, 10),
-        maxMinutes === "" ? null : parseInt(maxMinutes, 10)
+        maxSessions === "" ? null : parseInt(maxSessions, 10)
       );
       setResult(res);
       onCreated();
@@ -63,28 +61,16 @@ export default function InviteModal({ onClose, onCreated }) {
               />
             </label>
 
-            <div className="row">
-              <label className="field">
-                <span>Session cap</span>
-                <input
-                  type="number"
-                  min="0"
-                  value={maxSessions}
-                  onChange={(e) => setMaxSessions(e.target.value)}
-                  placeholder="blank = unlimited"
-                />
-              </label>
-              <label className="field">
-                <span>Minute cap</span>
-                <input
-                  type="number"
-                  min="0"
-                  value={maxMinutes}
-                  onChange={(e) => setMaxMinutes(e.target.value)}
-                  placeholder="blank = unlimited"
-                />
-              </label>
-            </div>
+            <label className="field">
+              <span>Session cap</span>
+              <input
+                type="number"
+                min="0"
+                value={maxSessions}
+                onChange={(e) => setMaxSessions(e.target.value)}
+                placeholder="blank = unlimited"
+              />
+            </label>
 
             {error && <div className="error">{error}</div>}
 

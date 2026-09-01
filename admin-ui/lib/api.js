@@ -72,10 +72,10 @@ export const api = {
   me: () => request("/api/auth/me/"),
 
   listUsers: () => request("/api/admin/users/"),
-  inviteUser: (email, max_sessions, max_minutes) =>
+  inviteUser: (email, max_sessions) =>
     request("/api/admin/users/", {
       method: "POST",
-      body: { email, max_sessions, max_minutes },
+      body: { email, max_sessions },
     }),
   userDetail: (id) => request(`/api/admin/users/${id}/`),
   adjustQuota: (id, patch) =>
