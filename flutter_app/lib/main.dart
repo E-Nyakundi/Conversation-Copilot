@@ -15,6 +15,10 @@ import 'screens/onboarding_screen.dart';
 import 'screens/session_history_screen.dart';
 import 'screens/settings_screen.dart';
 import 'theme.dart';
+import 'tour/tour_controller.dart';
+import 'tour/tour_help_button.dart';
+import 'tour/tour_overlay.dart';
+import 'tour/tour_step.dart';
 
 void main() {
   runApp(const CopilotApp());
@@ -177,6 +181,22 @@ class _AppRootState extends State<AppRoot> {
 /// pattern. Home's own gear icon still jumps straight to the Settings
 /// tab (via [_goToSettings]), so the one-tap access the mockup intended
 /// is preserved even though the navigation model around it changed.
+///
+/// Full-app hint system (2026-08-31, build plan §16): this is where the
+/// mandatory guided tour actually runs, wrapping the whole shell in
+/// TourOverlay — separate from OnboardingScreen (which only covers
+/// welcome/mic-permission/knowledge-upload/ready, BEFORE this shell ever
+/// mounts). Lewis's spec was "continuous onboarding... up to the very
+/// end... even the settings page... all pages", which is why this lives
+/// here rather than being folded into OnboardingScreen itself — the tour
+/// needs to walk the REAL Home/History/Settings/LiveSession screens
+/// after they exist, not a separate slideshow before them. All four
+/// have real TourScreens: Home -> History -> Settings -> a pushed
+/// LiveSessionScreen route (see _followTour/_startTourLiveSession below
+/// for how a pushed route participates in what's otherwise an
+/// IndexedStack tab sequence), then completion. On-demand replay
+/// (TourHelpButton) is wired on Home/History/Settings; LiveSessionScreen
+/// doesn't have one yet (see build plan §16 for why).
 class AppShell extends StatefulWidget {
   const AppShell({super.key, required this.onSignOut});
 
@@ -188,6 +208,200 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int _tab = 0;
+
+  // Full-app hint system (2026-08-31, build plan §16): keys held here
+  // (State, not build()) so they're stable across rebuilds — see
+  // home_screen.dart's doc comment on HomeScreen's key params for why a
+  // key created inside build() wouldn't work for this.
+  final _homeSettingsKey = GlobalKey();
+  final _homeStartSessionKey = GlobalKey();
+  final _homeViewAllKey = GlobalKey();
+  final _historySearchKey = GlobalKey();
+  final _historyFiltersKey = GlobalKey();
+  final _settingsAnswerLengthKey = GlobalKey();
+  final _settingsDiarizationKey = GlobalKey();
+  final _settingsKnowledgeBaseKey = GlobalKey();
+  final _settingsSignOutKey = GlobalKey();
+  final _liveSessionMicKey = GlobalKey();
+
+  late final TourController _tour;
+
+  // Full-app hint system (2026-08-31, build plan §16): index each tab
+  // screenId maps to in the IndexedStack below — kept in one place so
+  // build()'s tab-following logic and the destinations list can't drift
+  // out of sync with each other.
+  static const _tabScreenIds = ['home', 'history', 'settings'];
+
+  @override
+  void initState() {
+    super.initState();
+    _tour = TourController(
+      // 'live_session' deliberately included in screenOrder even though
+      // it isn't one of AppShell's IndexedStack tabs — see build()'s
+      // _followTour() and _startTourLiveSession() below for how a
+      // PUSHED route participates in what's otherwise a tab-index-driven
+      // sequence. This is the resolution to the build plan §16 checklist
+      // item "LiveSessionScreen has no tour integration... wiring it in
+      // will need slightly different mechanics".
+      screenOrder: const ['home', 'history', 'settings', 'live_session'],
+      screens: {
+        'home': TourScreen(
+          screenId: 'home',
+          steps: [
+            TourStep(
+              id: 'home.settings',
+              key: _homeSettingsKey,
+              title: 'Settings, always one tap away',
+              description:
+                  'Manage your account, connectivity, and knowledge base from here — same screen as the Settings tab below.',
+            ),
+            TourStep(
+              id: 'home.view_all',
+              key: _homeViewAllKey,
+              title: 'Your full session history',
+              description: 'Every past session lives here, searchable, once you\'ve recorded a few.',
+            ),
+            TourStep(
+              id: 'home.start_session',
+              key: _homeStartSessionKey,
+              title: 'This is where it starts',
+              description:
+                  'Tap the mic to start your first live session — Copilot listens and suggests answers as you talk. '
+                  'We\'ll walk the rest of the app first, then you\'ll get here for real.',
+            ),
+          ],
+        ),
+        'history': TourScreen(
+          screenId: 'history',
+          steps: [
+            TourStep(
+              id: 'history.search',
+              key: _historySearchKey,
+              title: 'Search past transcripts',
+              description: 'Find anything you or the other person said in a previous session.',
+            ),
+            TourStep(
+              id: 'history.filters',
+              key: _historyFiltersKey,
+              title: 'Narrow it down',
+              description: 'Filter to sessions that had suggestions, or just this week\'s.',
+            ),
+          ],
+        ),
+        'settings': TourScreen(
+          screenId: 'settings',
+          steps: [
+            TourStep(
+              id: 'settings.answer_length',
+              key: _settingsAnswerLengthKey,
+              title: 'How much detail you want',
+              description: 'Quick, medium, or detailed — sets the default length for live suggestions.',
+            ),
+            TourStep(
+              id: 'settings.diarization',
+              key: _settingsDiarizationKey,
+              title: 'Tell voices apart',
+              description: 'Speaker diarization is more accurate but uses more battery — your call.',
+            ),
+            TourStep(
+              id: 'settings.knowledge_base',
+              key: _settingsKnowledgeBaseKey,
+              title: 'Your knowledge base',
+              description: 'Add or manage the CV, LinkedIn, or GitHub profile you uploaded earlier — anytime.',
+            ),
+            TourStep(
+              id: 'settings.sign_out',
+              key: _settingsSignOutKey,
+              title: 'Signing out',
+              description: 'You can always come back — you\'ll just need your email and password again.',
+            ),
+          ],
+        ),
+        'live_session': TourScreen(
+          screenId: 'live_session',
+          steps: [
+            TourStep(
+              id: 'live_session.mic',
+              key: _liveSessionMicKey,
+              title: 'Now, for real — start your session',
+              description:
+                  'Tap the mic to name this session, tell us what kind of questions to expect, and start listening.',
+              // Lewis's spec: "component tips + a short task before
+              // advancing" — the ONE task-gated step in the whole tour
+              // (home.start_session above was deliberately changed to a
+              // plain step — see its own comment — since the real "try
+              // it" moment is here instead, on the actual live screen,
+              // not a preview of it back on Home).
+              requiresTask: true,
+            ),
+          ],
+        ),
+      },
+    );
+    _tour.load();
+    _tour.addListener(_followTour);
+  }
+
+  @override
+  void dispose() {
+    _tour.removeListener(_followTour);
+    _tour.dispose();
+    super.dispose();
+  }
+
+  /// Full-app hint system (2026-08-31, build plan §16): keeps AppShell's
+  /// visible tab in sync with the tour's current screen as it advances
+  /// past Home into History/Settings, AND handles the one screen that
+  /// isn't a tab at all (live_session) by actually pushing the route —
+  /// resolving the build()-comment gap flagged when only Home was wired.
+  bool _pushedTourLiveSession = false;
+
+  void _followTour() {
+    if (!_tour.isActive) return;
+    final screenId = _tour.currentScreenId;
+    if (screenId == null) return;
+
+    if (screenId == 'live_session') {
+      if (!_pushedTourLiveSession) {
+        _pushedTourLiveSession = true;
+        _startTourLiveSession();
+      }
+      return;
+    }
+
+    final tabIndex = _tabScreenIds.indexOf(screenId);
+    if (tabIndex != -1 && tabIndex != _tab) {
+      setState(() => _tab = tabIndex);
+    }
+  }
+
+  /// Pushes LiveSessionScreen as part of the mandatory tour itself,
+  /// passing the SAME TourController + mic GlobalKey down (see
+  /// live_session_screen.dart's LiveSessionScreen.tour/micKey doc
+  /// comment for why a pushed route needs explicit passing rather than
+  /// reaching the controller through a shared ancestor the way the three
+  /// IndexedStack tabs do). Deliberately does NOT reuse [_startSession]
+  /// below — that path is for a real, user-initiated session start
+  /// outside the tour and pops back to Home when the session ends; this
+  /// one is a stop on the guided tour and should behave like one.
+  Future<void> _startTourLiveSession() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => LiveSessionScreen(tour: _tour, micKey: _liveSessionMicKey),
+      ),
+    );
+    // Whether the tour step's task was actually completed (advancing
+    // TourController past 'live_session', see LiveSessionScreen's
+    // _toggleMic hook) or the user backed out of this pushed route
+    // without tapping the mic, _pushedTourLiveSession is reset here so a
+    // later on-demand replay of the live_session step (this route has no
+    // TourHelpButton of its own yet — see build plan §16) can push this
+    // route again rather than being permanently latched from this one
+    // pass. replayScreen('live_session') would still work if called from
+    // elsewhere (e.g. a future help entry point on Home) since this
+    // reset makes AppShell ready to push again either way.
+    _pushedTourLiveSession = false;
+  }
 
   void _goToSettings() => setState(() => _tab = 2);
 
@@ -204,29 +418,59 @@ class _AppShellState extends State<AppShell> {
         onStartSession: _startSession,
         onOpenSettings: _goToSettings,
         onViewAllSessions: () => setState(() => _tab = 1),
+        settingsKey: _homeSettingsKey,
+        startSessionKey: _homeStartSessionKey,
+        viewAllKey: _homeViewAllKey,
+        headerTrailing: TourHelpButton(tour: _tour, screenId: 'home'),
       ),
       // showBackButton: false — these are root tab destinations here,
       // not pushed routes; the mockups' back arrow is for when they're
       // reached via a pushed route elsewhere (e.g. Settings' own
       // "Connectivity test" row still pushes the Phase 0 ping harness
       // as a real route, which does want a back button).
-      const SessionHistoryScreen(showBackButton: false),
-      SettingsScreen(showBackButton: false, onSignOut: widget.onSignOut),
+      SessionHistoryScreen(
+        showBackButton: false,
+        searchKey: _historySearchKey,
+        filtersKey: _historyFiltersKey,
+        headerTrailing: TourHelpButton(tour: _tour, screenId: 'history'),
+      ),
+      SettingsScreen(
+        showBackButton: false,
+        onSignOut: widget.onSignOut,
+        answerLengthKey: _settingsAnswerLengthKey,
+        diarizationKey: _settingsDiarizationKey,
+        knowledgeBaseKey: _settingsKnowledgeBaseKey,
+        signOutKey: _settingsSignOutKey,
+        headerTrailing: TourHelpButton(tour: _tour, screenId: 'settings'),
+      ),
     ];
 
-    return Scaffold(
-      backgroundColor: CopilotColors.ink,
-      body: IndexedStack(index: _tab, children: screens),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
-        backgroundColor: CopilotColors.panel,
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
-          NavigationDestination(icon: Icon(Icons.history_outlined), selectedIcon: Icon(Icons.history), label: 'History'),
-          NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
-        ],
-      ),
+    // Full-app hint system (2026-08-31, build plan §16): _followTour
+    // (registered as a _tour listener in initState) is what keeps _tab
+    // in sync with the tour's progress and pushes LiveSessionScreen when
+    // the tour reaches it — this build() doesn't need to do any of that
+    // itself, just render whatever _tab currently is.
+    return AnimatedBuilder(
+      animation: _tour,
+      builder: (context, _) {
+        return TourOverlay(
+          controller: _tour,
+          child: Scaffold(
+            backgroundColor: CopilotColors.ink,
+            body: IndexedStack(index: _tab, children: screens),
+            bottomNavigationBar: NavigationBar(
+              selectedIndex: _tab,
+              onDestinationSelected: (i) => setState(() => _tab = i),
+              backgroundColor: CopilotColors.panel,
+              destinations: const [
+                NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
+                NavigationDestination(icon: Icon(Icons.history_outlined), selectedIcon: Icon(Icons.history), label: 'History'),
+                NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

@@ -17,9 +17,26 @@ enum _HistoryFilter { all, hasSuggestions, thisWeek }
 /// over the fetched list (small enough dataset for now that a server-side
 /// search endpoint isn't worth it yet).
 class SessionHistoryScreen extends StatefulWidget {
-  const SessionHistoryScreen({super.key, this.showBackButton = true});
+  const SessionHistoryScreen({
+    super.key,
+    this.showBackButton = true,
+    this.searchKey,
+    this.filtersKey,
+    this.headerTrailing,
+  });
 
   final bool showBackButton;
+
+  // Full-app hint system (2026-08-31, build plan §16): stable GlobalKeys
+  // for the tour — same pattern as home_screen.dart/settings_screen.dart,
+  // owned by AppShell's State, not created here.
+  final GlobalKey? searchKey;
+  final GlobalKey? filtersKey;
+
+  /// Passed straight through to CopilotHeader's own `trailing` slot —
+  /// AppShell uses this to place a TourHelpButton without this screen
+  /// needing to know anything about the tour system itself.
+  final Widget? headerTrailing;
 
   @override
   State<SessionHistoryScreen> createState() => _SessionHistoryScreenState();
@@ -81,12 +98,14 @@ class _SessionHistoryScreenState extends State<SessionHistoryScreen> {
       appBar: CopilotHeader(
         title: 'Session History',
         onBack: widget.showBackButton ? () => Navigator.of(context).pop() : null,
+        trailing: widget.headerTrailing,
       ),
       body: Column(
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
             child: Container(
+              key: widget.searchKey,
               decoration: BoxDecoration(
                 color: CopilotColors.panel,
                 borderRadius: BorderRadius.circular(10),
@@ -118,6 +137,7 @@ class _SessionHistoryScreenState extends State<SessionHistoryScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
             child: Row(
+              key: widget.filtersKey,
               children: [
                 _FilterChip(
                   label: 'All',

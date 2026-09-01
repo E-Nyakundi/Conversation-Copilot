@@ -25,6 +25,7 @@ def _session_summary(session: Session) -> dict:
         "id": str(session.id),
         "title": session.title,
         "mode": session.mode,
+        "is_bonus": session.is_bonus,
         "started_at": session.started_at.isoformat(),
         "ended_at": session.ended_at.isoformat() if session.ended_at else None,
         "turn_count": session.turns.count(),
@@ -180,7 +181,14 @@ def session_end_view(request, session_id):
     path uses, so a session ended via either route is charged exactly
     once, the same way. Guarded by the same "only if ended_at was still
     None" check that already existed here, which is also what prevents
-    double-charging if this endpoint is called more than once."""
+    double-charging if this endpoint is called more than once.
+
+    Session-cap fix (2026-09-01): response now includes a bonus_offer
+    object — the same offer the WS consumer pushes as a bonus_offer
+    message on end_session/force-end, but this route has no live socket
+    to push over, so it's returned in the body instead. Included every
+    time this ends a session, matching the WS side's "offered every
+    time a session ends" behavior."""
     session = _get_owned_session(request, session_id)
 
     if session.ended_at is None:
@@ -188,7 +196,17 @@ def session_end_view(request, session_id):
         session.save(update_fields=["ended_at"])
         finalize_session_usage(session)
 
-    return JsonResponse(_session_summary(session))
+    payload = _session_summary(session)
+    if not session.is_bonus:
+        payload["bonus_offer"] = {
+            "bonus_minutes": Session.BONUS_GRACE_MINUTES,
+            "note": (
+                "This is a separate, uncounted grace period for extra "
+                "familiarization or tutorial use, not a continuation of "
+                "your real session."
+            ),
+        }
+    return JsonResponse(payload)
 
 
 @require_http_methods(["GET", "PUT"])

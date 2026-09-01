@@ -24,11 +24,38 @@ class HomeScreen extends StatefulWidget {
     required this.onStartSession,
     this.onOpenSettings,
     this.onViewAllSessions,
+    this.settingsKey,
+    this.startSessionKey,
+    this.viewAllKey,
+    this.headerTrailing,
   });
 
   final VoidCallback onStartSession;
   final VoidCallback? onOpenSettings;
   final VoidCallback? onViewAllSessions;
+
+  /// An extra widget placed in the top-right header row, alongside the
+  /// settings gear — AppShell uses this to place a TourHelpButton
+  /// without this screen needing to know anything about the tour system
+  /// itself, same pattern as headerTrailing on SessionHistoryScreen and
+  /// SettingsScreen (build plan §16) even though this screen doesn't use
+  /// CopilotHeader at all — its header row is hand-built (see build()
+  /// below), so this is a plain extra child rather than a passthrough to
+  /// a shared widget's own trailing slot.
+  final Widget? headerTrailing;
+
+  // Full-app hint system (2026-08-31, build plan §16): stable GlobalKeys
+  // for the tour to target, owned by the caller (AppShell) rather than
+  // created here — a key created inside this widget's own build() would
+  // be a NEW GlobalKey every rebuild (e.g. every tab switch via the
+  // IndexedStack in main.dart), which breaks TourOverlay's ability to
+  // resolve a stable RenderBox across frames. See main.dart's AppShell
+  // for where these are actually instantiated (once, in State, not in
+  // build()) and lib/tour/tour_step.dart for how they're wired into a
+  // TourScreen definition.
+  final GlobalKey? settingsKey;
+  final GlobalKey? startSessionKey;
+  final GlobalKey? viewAllKey;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -91,20 +118,30 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                     ),
                   ),
-                  if (widget.onOpenSettings != null)
-                    GestureDetector(
-                      onTap: widget.onOpenSettings,
-                      child: Container(
-                        width: 34,
-                        height: 34,
-                        decoration: const BoxDecoration(
-                          color: CopilotColors.panel,
-                          shape: BoxShape.circle,
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (widget.headerTrailing != null) ...[
+                        widget.headerTrailing!,
+                        const SizedBox(width: 10),
+                      ],
+                      if (widget.onOpenSettings != null)
+                        GestureDetector(
+                          key: widget.settingsKey,
+                          onTap: widget.onOpenSettings,
+                          child: Container(
+                            width: 34,
+                            height: 34,
+                            decoration: const BoxDecoration(
+                              color: CopilotColors.panel,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.settings_outlined,
+                                color: CopilotColors.mist, size: 17),
+                          ),
                         ),
-                        child: const Icon(Icons.settings_outlined,
-                            color: CopilotColors.mist, size: 17),
-                      ),
-                    ),
+                    ],
+                  ),
                 ],
               ),
               const SizedBox(height: 18),
@@ -112,6 +149,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Column(
                   children: [
                     GestureDetector(
+                      key: widget.startSessionKey,
                       onTap: widget.onStartSession,
                       child: Container(
                         width: 132,
@@ -145,6 +183,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   Padding(
                     padding: const EdgeInsets.only(top: 20, bottom: 8),
                     child: GestureDetector(
+                      key: widget.viewAllKey,
                       onTap: widget.onViewAllSessions,
                       child: const Text(
                         'View all',

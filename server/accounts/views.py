@@ -9,13 +9,14 @@ from .auth import token_required
 
 
 def _quota_summary(quota):
+    # Session-cap fix (2026-09-01): max_minutes/minutes_used/
+    # minutes_remaining dropped — there is no account-wide minutes pool
+    # any more. Per-session time is a flat 2-hour hard cap enforced on
+    # the session itself, not something reported here.
     return {
         "max_sessions": quota.max_sessions,
         "sessions_used": quota.sessions_used,
         "sessions_remaining": quota.sessions_remaining(),
-        "max_minutes": quota.max_minutes,
-        "minutes_used": quota.minutes_used,
-        "minutes_remaining": quota.minutes_remaining(),
         "is_active": quota.is_active,
     }
 

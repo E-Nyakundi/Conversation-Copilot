@@ -1,6 +1,7 @@
 import uuid
 
 from django.db import models
+from django.utils import timezone
 
 
 class UserProfile(models.Model):
@@ -92,7 +93,32 @@ class Session(models.Model):
     conversation, roughly). Kept deliberately thin for Phase 1 — mode/title
     are here now so Phase 9 (domain modes) and Phase 8 (debrief) don't need
     a schema migration to bolt them on later.
+
+    Session-cap fix (2026-09-01): replaces the old account-wide minutes
+    pool (TenantQuota.max_minutes/minutes_used, now removed) with a flat,
+    per-session, resetting 2-hour hard ceiling — every session gets its
+    own fresh clock from `started_at`, nothing carries over between
+    sessions. See SESSION_HARD_CAP_MINUTES /
+    SESSION_WARNING_BEFORE_CAP_MINUTES below and the periodic check in
+    audio/consumers.py._handle_audio_chunk (the mid-session enforcement
+    point; is_past_hard_cap/should_warn are pure helpers used from
+    there).
     """
+
+    # Hard ceiling: server force-ends the session at exactly this many
+    # minutes elapsed since started_at. Not configurable per tenant —
+    # this replaced the old configurable minutes pool by design; see the
+    # 2026-09-01 handoff spec.
+    SESSION_HARD_CAP_MINUTES = 120
+    # Client gets an advance warning this many minutes BEFORE the hard
+    # cap — i.e. at the 1h30m mark for a 2-hour cap.
+    SESSION_WARNING_BEFORE_CAP_MINUTES = 30
+    # Flat, uncounted "bonus" grace period offered (not auto-granted)
+    # when a session ends — whether by the user ending early or by the
+    # hard cap force-ending it. Same 15 minutes every time; not
+    # proportional to time saved, and not charged against anything
+    # (there is no pool left to charge it against).
+    BONUS_GRACE_MINUTES = 15
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
@@ -109,6 +135,15 @@ class Session(models.Model):
     title = models.CharField(max_length=255, blank=True)
     mode = models.CharField(max_length=50, default="general")
 
+    # Session-cap fix (2026-09-01): a bonus session (see BONUS_GRACE_MINUTES
+    # above) is a real Session row — turns/extractions/suggestions all work
+    # normally — but is flagged so conversation.usage.finalize_session_usage
+    # can skip it entirely: it must never increment sessions_used or appear
+    # as billable usage. Its own cap is BONUS_GRACE_MINUTES, not
+    # SESSION_HARD_CAP_MINUTES (see is_past_hard_cap below) and it is never
+    # itself eligible for a further bonus offer when it ends.
+    is_bonus = models.BooleanField(default=False)
+
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
 
@@ -117,6 +152,43 @@ class Session(models.Model):
 
     def __str__(self):
         return f"Session {self.id} ({self.started_at:%Y-%m-%d %H:%M})"
+
+    def elapsed_minutes(self, *, now=None) -> float:
+        """Minutes since this session's own started_at — never anything
+        carried over from a previous session. `now` is injectable for
+        tests; defaults to the actual current time."""
+        if not self.started_at:
+            return 0.0
+        now = now or timezone.now()
+        return max(0.0, (now - self.started_at).total_seconds() / 60.0)
+
+    def hard_cap_minutes(self) -> int:
+        """The cap that applies to THIS session: a bonus session gets
+        BONUS_GRACE_MINUTES (15), a normal session gets
+        SESSION_HARD_CAP_MINUTES (120). Kept as a method rather than two
+        separate constants read at call sites, so is_past_hard_cap/
+        should_warn don't need to know which kind of session they're
+        checking."""
+        return self.BONUS_GRACE_MINUTES if self.is_bonus else self.SESSION_HARD_CAP_MINUTES
+
+    def is_past_hard_cap(self, *, now=None) -> bool:
+        return self.elapsed_minutes(now=now) >= self.hard_cap_minutes()
+
+    def should_warn(self, *, now=None) -> bool:
+        """True once elapsed time has crossed the warn-before-cap
+        threshold (1h30m for the default 2h cap) but hasn't yet hit the
+        hard cap itself — callers are expected to send at most one
+        warning (see audio/consumers.py's `_cap_warning_sent` flag).
+
+        A bonus session (15-minute cap) has no separate advance warning
+        — its whole window is shorter than the normal warning lead time,
+        so this always returns False for one; the client only needs to
+        know when a bonus session ends, not get a mid-bonus heads-up."""
+        if self.is_bonus:
+            return False
+        elapsed = self.elapsed_minutes(now=now)
+        warn_at = self.SESSION_HARD_CAP_MINUTES - self.SESSION_WARNING_BEFORE_CAP_MINUTES
+        return warn_at <= elapsed < self.SESSION_HARD_CAP_MINUTES
 
 
 class Turn(models.Model):

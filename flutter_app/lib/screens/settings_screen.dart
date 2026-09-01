@@ -15,7 +15,16 @@ import 'knowledge_base_screen.dart';
 /// live_session_screen.dart's own field, unaffected by this screen for
 /// now) — wiring a shared config store is follow-up work.
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, this.showBackButton = true, this.onSignOut});
+  const SettingsScreen({
+    super.key,
+    this.showBackButton = true,
+    this.onSignOut,
+    this.answerLengthKey,
+    this.diarizationKey,
+    this.knowledgeBaseKey,
+    this.signOutKey,
+    this.headerTrailing,
+  });
 
   final bool showBackButton;
 
@@ -26,6 +35,21 @@ class SettingsScreen extends StatefulWidget {
   /// the sign-out row in that case rather than crash on a missing
   /// callback.
   final Future<void> Function()? onSignOut;
+
+  // Full-app hint system (2026-08-31, build plan §16): stable GlobalKeys
+  // for the tour to target — same reasoning as home_screen.dart's
+  // settingsKey/startSessionKey/viewAllKey params (owned by AppShell's
+  // State, not created here, so they survive this screen's own
+  // IndexedStack-driven rebuilds).
+  final GlobalKey? answerLengthKey;
+  final GlobalKey? diarizationKey;
+  final GlobalKey? knowledgeBaseKey;
+  final GlobalKey? signOutKey;
+
+  /// Passed straight through to CopilotHeader's own `trailing` slot —
+  /// AppShell uses this to place a TourHelpButton without this screen
+  /// needing to know anything about the tour system itself.
+  final Widget? headerTrailing;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -64,6 +88,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       appBar: CopilotHeader(
         title: 'Settings',
         onBack: widget.showBackButton ? () => Navigator.of(context).pop() : null,
+        trailing: widget.headerTrailing,
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
@@ -72,6 +97,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           CopilotGroup(
             children: [
               _SettingsRow(
+                key: widget.answerLengthKey,
                 label: 'Answer length',
                 trailing: _MiniToggle(
                   options: const ['quick', 'medium', 'detailed'],
@@ -83,6 +109,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
               _SettingsRow(
+                key: widget.diarizationKey,
                 label: 'Speaker diarization',
                 sublabel: 'more accurate, uses more battery',
                 trailing: _Switch(
@@ -91,6 +118,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
               _SettingsRow(
+                key: widget.knowledgeBaseKey,
                 label: 'Knowledge base',
                 sublabel: 'notes and docs the assistant can draw on',
                 onTap: () => Navigator.of(context).push(
@@ -176,6 +204,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _AccountSection(
             user: _account,
             loading: _accountLoading,
+            signOutKey: widget.signOutKey,
             onSignOut: widget.onSignOut == null
                 ? null
                 : () => _confirmSignOut(context, widget.onSignOut!),
@@ -263,11 +292,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 /// gives — this mirrors how the admin control room shows the same
 /// numbers, just read-only here.
 class _AccountSection extends StatelessWidget {
-  const _AccountSection({required this.user, required this.loading, this.onSignOut});
+  const _AccountSection({required this.user, required this.loading, this.onSignOut, this.signOutKey});
 
   final AuthUser? user;
   final bool loading;
   final Future<void> Function()? onSignOut;
+  final GlobalKey? signOutKey;
 
   @override
   Widget build(BuildContext context) {
@@ -328,6 +358,7 @@ class _AccountSection extends StatelessWidget {
         ),
         if (onSignOut != null)
           _SettingsRow(
+            key: signOutKey,
             label: 'Sign out',
             labelColor: Colors.redAccent,
             onTap: () {
@@ -370,6 +401,7 @@ class _QuotaLine extends StatelessWidget {
 
 class _SettingsRow extends StatelessWidget {
   const _SettingsRow({
+    super.key,
     required this.label,
     this.sublabel,
     this.value,

@@ -26,7 +26,6 @@ def invite_user(
     email: str,
     created_by: User,
     max_sessions: int | None = None,
-    max_minutes: int | None = None,
 ) -> tuple[User, str]:
     """
     Create a new tenant account (admin-only entry point — callers must
@@ -36,6 +35,11 @@ def invite_user(
     and returned exactly once — it is stored only as a hash (via
     set_password, same as any Django password) and cannot be recovered
     later, matching the design doc's "show it once at creation" note.
+
+    Session-cap fix (2026-09-01): no longer accepts max_minutes — the
+    account-wide minutes pool is gone. Per-session time is a flat,
+    non-configurable 2-hour hard cap (see conversation.models.Session),
+    not something set per tenant at invite time.
     """
     temp_password = _generate_temp_password()
     user = User.objects.create_user(
@@ -47,7 +51,6 @@ def invite_user(
     TenantQuota.objects.create(
         user=user,
         max_sessions=max_sessions,
-        max_minutes=max_minutes,
     )
     return user, temp_password
 

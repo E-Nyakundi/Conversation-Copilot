@@ -140,6 +140,17 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
     # on a timer.
     BACKPRESSURE_MAX_BACKLOG_S = float(os.environ.get("BACKPRESSURE_MAX_BACKLOG_MS", "2000")) / 1000.0
 
+    # Session-cap fix (2026-09-01): how often (in frames) to check the
+    # session's elapsed time against Session.SESSION_HARD_CAP_MINUTES /
+    # SESSION_WARNING_BEFORE_CAP_MINUTES. FRAME_DURATION_S is ~10-30ms
+    # depending on VAD config, so checking every frame would mean a
+    # `timezone.now()`/comparison on every single frame for the entire
+    # connection lifetime for no real benefit — the cap only needs
+    # minute-level precision. Every 100 frames is on the order of a few
+    # seconds, comfortably tight enough that neither the warning nor the
+    # force-end can drift noticeably late.
+    CAP_CHECK_EVERY_N_FRAMES = 100
+
     async def connect(self):
         # Multi-tenancy retrofit (2026-08-30): accounts.ws_auth's
         # TokenAuthMiddleware (wrapping the WebSocket router in
@@ -157,12 +168,24 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             return
 
         quota = await self._get_quota(user)
-        allowed, reason = (False, "account_inactive") if quota is None else quota.can_start_session()
-        if not allowed:
-            await self.accept()
-            await self.send(text_data=json.dumps({"type": "error", "reason": reason}))
-            await self.close(code=4003)
-            return
+        # Session-cap fix (2026-09-01): ?bonus=1 requests the 15-minute
+        # uncounted grace round offered via bonus_offer (see
+        # _offer_bonus) after a session ends. Bypasses can_start_session
+        # entirely — a bonus round is explicitly not billable usage
+        # (finalize_session_usage skips it via Session.is_bonus), so it
+        # would be wrong to block it on session-count/active-account
+        # quota the same way a real session is blocked. Still requires a
+        # valid token (checked above), just not quota headroom.
+        query_params = parse_qs(self.scope.get("query_string", b"").decode())
+        is_bonus = (query_params.get("bonus") or ["0"])[0].strip() == "1"
+
+        if not is_bonus:
+            allowed, reason = (False, "account_inactive") if quota is None else quota.can_start_session()
+            if not allowed:
+                await self.accept()
+                await self.send(text_data=json.dumps({"type": "error", "reason": reason}))
+                await self.close(code=4003)
+                return
 
         self.user = user
         session_id = self.scope["url_route"]["kwargs"].get("session_id")
@@ -175,12 +198,23 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         # a resumed session (session_id present, already has its own
         # title/mode from when it was first created) is never overwritten
         # by whatever the reconnect happened to be called with.
-        query_params = parse_qs(self.scope.get("query_string", b"").decode())
         title = (query_params.get("title") or [""])[0].strip()[:255]
         mode = (query_params.get("mode") or ["general"])[0].strip()
         if mode not in ("general", "coding", "no_code"):
             mode = "general"
-        self.session = await self._get_or_create_session(session_id, user, title, mode)
+        # Session-cap fix (2026-09-01): a bonus round is always a brand
+        # new session (session_id ignored, never resumed) — resuming an
+        # existing session_id under ?bonus=1 would either silently
+        # reopen a normal session with a 15-minute cap applied to
+        # whatever time is already elapsed on it, or (worse) flip an
+        # existing normal session to is_bonus and retroactively make its
+        # already-registered usage look wrong. Neither is right, so
+        # bonus always creates fresh.
+        self.session = (
+            await self._create_bonus_session(user, title, mode)
+            if is_bonus
+            else await self._get_or_create_session(session_id, user, title, mode)
+        )
 
         self._pending = b""
         self.speech_active = False
@@ -225,10 +259,25 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
         # ingestion for this connection for the whole generation. Tracked
         # here so disconnect() can cancel any still-running ones cleanly.
         self._background_tasks = set()
+        # Session-cap fix (2026-09-01): per-session 2-hour hard ceiling,
+        # checked periodically here rather than continuously — see
+        # _handle_audio_chunk's cap check below. `_cap_warning_sent`
+        # guards against re-sending the 1h30m warning on every frame
+        # once we're past that threshold (should_warn() stays True for
+        # the whole 30-minute window up to the hard cap, this flag turns
+        # "crossed the threshold" into a one-shot event).
+        self._cap_warning_sent = False
+        self._cap_check_frame_count = 0
 
         await self.accept()
         await self.send(
-            text_data=json.dumps({"type": "session_started", "session_id": str(self.session.id)})
+            text_data=json.dumps(
+                {
+                    "type": "session_started",
+                    "session_id": str(self.session.id),
+                    "is_bonus": self.session.is_bonus,
+                }
+            )
         )
 
     async def disconnect(self, close_code):
@@ -260,7 +309,17 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             self.session.ended_at = timezone.now()
             await self.session.asave()
             await _finalize_session_usage_async(self.session)
-            await self.send(text_data=json.dumps({"type": "session_ended"}))
+            await self.send(
+                text_data=json.dumps({"type": "session_ended", "reason": "user_ended", "session_id": str(self.session.id)})
+            )
+            # Session-cap fix (2026-09-01): the bonus offer is made on
+            # every normal session end, not just a hard-cap force-end —
+            # an early user-initiated end qualifies too (see the spec:
+            # "If a user ends a session early... OR gets force-ended...
+            # they are offered..."). A bonus session ending never offers
+            # a further bonus (see _check_session_cap's matching guard).
+            if not self.session.is_bonus:
+                await self._offer_bonus(self.session)
             await self.close()
             return
 
@@ -280,19 +339,20 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
     # -- audio pipeline -----------------------------------------------------
 
     async def _handle_audio_chunk(self, bytes_data: bytes):
-        # NOTE (2026-08-30 multi-tenancy retrofit): quota is checked once,
-        # at connect() time, not per-frame here. A session that started
-        # under quota can still run past max_minutes if it stays open long
-        # enough — enforcement of the *next* session start is airtight
-        # (can_start_session() in connect()), but a hard mid-session cutoff
-        # once minutes_used + this-session's-elapsed-time crosses
-        # max_minutes is NOT implemented yet. Deferred rather than bolted
-        # on quickly here because doing it safely means finalizing any
-        # in-progress segment and closing cleanly mid-stream, which
-        # touches the same state machine _finalize_segment/_process_frame
-        # already manage carefully — see the design doc's §6 for the
-        # intended approach (a periodic check every N frames) when this
-        # gets built.
+        # Session-cap fix (2026-09-01): periodic per-session hard-cap
+        # check, replacing the old NOTE here about this being
+        # unimplemented. Checked every CAP_CHECK_EVERY_N_FRAMES frames
+        # (not every frame — see that constant's docstring) rather than
+        # once at connect() time, since a session that started under
+        # quota can otherwise run indefinitely if left open. This can
+        # end the connection (force-end path), so it runs before any
+        # further processing of this chunk.
+        self._cap_check_frame_count += 1
+        if self._cap_check_frame_count % self.CAP_CHECK_EVERY_N_FRAMES == 0:
+            ended = await self._check_session_cap()
+            if ended:
+                return
+
         from stt.engine import pcm16_bytes_to_float32
 
         self._pending += bytes_data
@@ -328,6 +388,88 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             self._pending = self._pending[FRAME_BYTES:]
             frame_f32 = pcm16_bytes_to_float32(frame_bytes)
             await self._process_frame(frame_f32)
+
+    async def _check_session_cap(self) -> bool:
+        """
+        Session-cap fix (2026-09-01): the periodic per-session hard-cap
+        check called from _handle_audio_chunk. Returns True if the
+        session was force-ended here (caller must stop processing this
+        chunk further), False otherwise.
+
+        Two things can happen:
+          - 1h30m mark: send a one-shot `session_cap_warning` message
+            (client shows "30 minutes left"), keep the session running.
+          - 2h mark: force-end for real. Goes through the exact same
+            finalize path end_session/disconnect use (flush any
+            in-progress segment via _finalize_segment, mark ended_at,
+            finalize_session_usage) so this is charged identically to
+            a normal end — then offers the bonus grace period and
+            closes the socket.
+        """
+        session = getattr(self, "session", None)
+        if session is None or session.ended_at is not None:
+            return False
+
+        if session.is_past_hard_cap():
+            await self._finalize_segment()  # flush anything in progress, same as end_session
+            session.ended_at = timezone.now()
+            await session.asave()
+            await _finalize_session_usage_async(session)
+            await self.send(
+                text_data=json.dumps(
+                    {
+                        "type": "session_ended",
+                        "reason": "hard_cap_reached",
+                        "session_id": str(session.id),
+                    }
+                )
+            )
+            # Session-cap fix (2026-09-01): a bonus session ending never
+            # offers a further bonus — the grace round is a one-time
+            # thing per real session ending, not something that chains
+            # into more bonus rounds.
+            if not session.is_bonus:
+                await self._offer_bonus(session)
+            await self.close()
+            return True
+
+        if session.should_warn() and not self._cap_warning_sent:
+            self._cap_warning_sent = True
+            await self.send(
+                text_data=json.dumps(
+                    {
+                        "type": "session_cap_warning",
+                        "minutes_remaining": Session.SESSION_WARNING_BEFORE_CAP_MINUTES,
+                    }
+                )
+            )
+        return False
+
+    async def _offer_bonus(self, session):
+        """
+        Session-cap fix (2026-09-01): the 15-minute "bonus" grace period
+        is offered, never auto-granted — this just tells the client the
+        offer exists and what it means; the client decides whether to
+        ask the server to actually start one (a separate, later flow,
+        not built here — this consumer's job ends at making the offer
+        known). Sent identically whether the session got here via
+        force-end (hard cap) or a user-initiated early end (see
+        receive()'s end_session handler) so the two paths converge on
+        one presentation instead of two slightly different ones.
+        """
+        await self.send(
+            text_data=json.dumps(
+                {
+                    "type": "bonus_offer",
+                    "bonus_minutes": Session.BONUS_GRACE_MINUTES,
+                    "note": (
+                        "This is a separate, uncounted grace period for extra "
+                        "familiarization or tutorial use — not a continuation "
+                        "of your real session."
+                    ),
+                }
+            )
+        )
 
     async def _process_frame(self, frame_f32: np.ndarray):
         # Phase C (2026-08-23): need the raw probability now, not just
@@ -1134,3 +1276,10 @@ class AudioStreamConsumer(AsyncWebsocketConsumer):
             except Session.DoesNotExist:
                 pass
         return await Session.objects.acreate(owner=owner, title=title, mode=mode)
+
+    @staticmethod
+    async def _create_bonus_session(owner, title="", mode="general"):
+        """Session-cap fix (2026-09-01): always a fresh row, never a
+        resume — see connect()'s comment on why bonus never reuses an
+        existing session_id."""
+        return await Session.objects.acreate(owner=owner, title=title, mode=mode, is_bonus=True)

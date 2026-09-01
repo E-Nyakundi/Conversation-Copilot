@@ -25,9 +25,10 @@ class UserAdmin(DjangoUserAdmin):
 
 @admin.register(TenantQuota)
 class TenantQuotaAdmin(admin.ModelAdmin):
+    # Session-cap fix (2026-09-01): max_minutes/minutes_used columns
+    # dropped along with the fields themselves.
     list_display = (
-        "user", "is_active", "max_sessions", "sessions_used",
-        "max_minutes", "minutes_used", "updated_at",
+        "user", "is_active", "max_sessions", "sessions_used", "updated_at",
     )
     list_filter = ("is_active",)
 

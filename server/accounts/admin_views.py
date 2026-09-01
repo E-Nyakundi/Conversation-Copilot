@@ -55,8 +55,11 @@ def admin_users_view(request):
     """
     GET  /api/admin/users/  -> list all tenants + quota summary
     POST /api/admin/users/  -> create an invite
-         body: {"email": "...", "max_sessions": <int|null>, "max_minutes": <int|null>}
+         body: {"email": "...", "max_sessions": <int|null>}
          -> {"user": {...}, "temp_password": "..."}  (shown exactly once)
+
+    Session-cap fix (2026-09-01): max_minutes dropped from the request
+    body — there is no account-wide minutes pool to set any more.
     """
     if request.method == "GET":
         users = User.objects.select_related("quota").order_by("-created_at")
@@ -74,16 +77,13 @@ def admin_users_view(request):
         return JsonResponse({"error": "a user with that email already exists"}, status=409)
 
     max_sessions = body.get("max_sessions")
-    max_minutes = body.get("max_minutes")
-    for field_name, value in (("max_sessions", max_sessions), ("max_minutes", max_minutes)):
-        if value is not None and not isinstance(value, int):
-            return JsonResponse({"error": f"{field_name} must be an integer or null"}, status=400)
+    if max_sessions is not None and not isinstance(max_sessions, int):
+        return JsonResponse({"error": "max_sessions must be an integer or null"}, status=400)
 
     user, temp_password = services.invite_user(
         email=email,
         created_by=request.user,
         max_sessions=max_sessions,
-        max_minutes=max_minutes,
     )
     return JsonResponse(
         {"user": _admin_user_summary(user), "temp_password": temp_password},
@@ -109,11 +109,15 @@ def admin_user_detail_view(request, user_id):
 def admin_user_quota_view(request, user_id):
     """
     PATCH /api/admin/users/<id>/quota/
-    body: {"sessions_delta": <int>, "minutes_delta": <int>}
-      -> adds to (or, if negative, subtracts from) the user's max caps.
-    Also accepts {"max_sessions": <int|null>, "max_minutes": <int|null>}
-      -> sets the caps to an absolute value instead (null = unlimited).
-    A request may use either style but not mix them for the same field.
+    body: {"sessions_delta": <int>}
+      -> adds to (or, if negative, subtracts from) the user's max
+         session cap.
+    Also accepts {"max_sessions": <int|null>}
+      -> sets the cap to an absolute value instead (null = unlimited).
+    A request may use either style but not mix them.
+
+    Session-cap fix (2026-09-01): minutes_delta/max_minutes dropped —
+    there is no account-wide minutes pool left to adjust.
     """
     try:
         user = User.objects.select_related("quota").get(pk=user_id)
@@ -127,33 +131,27 @@ def admin_user_quota_view(request, user_id):
 
     quota: TenantQuota = user.quota
 
-    has_absolute = "max_sessions" in body or "max_minutes" in body
-    has_delta = "sessions_delta" in body or "minutes_delta" in body
+    has_absolute = "max_sessions" in body
+    has_delta = "sessions_delta" in body
 
     if has_absolute and has_delta:
         return JsonResponse(
-            {"error": "use either absolute (max_sessions/max_minutes) or delta "
-                      "(sessions_delta/minutes_delta) fields, not both"},
+            {"error": "use either absolute (max_sessions) or delta "
+                      "(sessions_delta) fields, not both"},
             status=400,
         )
 
     if has_absolute:
-        if "max_sessions" in body:
-            quota.max_sessions = body["max_sessions"]
-        if "max_minutes" in body:
-            quota.max_minutes = body["max_minutes"]
-        quota.save(update_fields=["max_sessions", "max_minutes", "updated_at"])
+        quota.max_sessions = body["max_sessions"]
+        quota.save(update_fields=["max_sessions", "updated_at"])
         UsageEvent.objects.create(
             user=user,
             session=None,
             minutes=0,
-            note=f"admin set max_sessions={quota.max_sessions}, max_minutes={quota.max_minutes}",
+            note=f"admin set max_sessions={quota.max_sessions}",
         )
     elif has_delta:
-        quota.adjust(
-            sessions_delta=int(body.get("sessions_delta", 0)),
-            minutes_delta=int(body.get("minutes_delta", 0)),
-        )
+        quota.adjust(sessions_delta=int(body.get("sessions_delta", 0)))
     else:
         return JsonResponse({"error": "no quota fields provided"}, status=400)
 

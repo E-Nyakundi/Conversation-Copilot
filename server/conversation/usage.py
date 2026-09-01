@@ -22,7 +22,18 @@ def finalize_session_usage(session) -> None:
     existing "mark ended" guards already in consumers.py/rest_views.py)
     — calling it twice would double-charge the same session against the
     owner's quota.
+
+    Session-cap fix (2026-09-01): a bonus session (session.is_bonus) is
+    explicitly uncounted — per the spec, the 15-minute grace round "is
+    NOT counted against anything (no pool, since the pool is gone
+    anyway)." Skipped here entirely, before even computing elapsed
+    minutes, so it never touches sessions_used and never creates a
+    UsageEvent that would make it look like billable usage in the admin
+    timeline.
     """
+    if session.is_bonus:
+        return
+
     if session.owner_id is None:
         # Sessions created before the multi-tenancy retrofit (owner
         # nullable during migration) have nothing to charge — see

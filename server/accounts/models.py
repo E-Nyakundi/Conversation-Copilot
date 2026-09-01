@@ -120,24 +120,28 @@ class AuthToken(models.Model):
 
 class TenantQuota(models.Model):
     """
-    Per-tenant usage cap, dual-metric per the 2026-08-30 decision: a
-    session-count cap AND a total-minutes cap, either one independently
-    exhausting access. `None` on either max means "unlimited" for that
-    axis specifically, rather than one combined "unlimited" flag, so an
-    admin can e.g. cap sessions but not minutes.
+    Per-tenant usage cap.
 
-    `is_active` is a separate on/off switch from the numeric caps —
+    Session-cap fix (2026-09-01): the account-wide *minutes* pool
+    (`max_minutes`/`minutes_used`, a lifetime/cumulative cap across all
+    sessions) has been removed outright — it was a design mistake per
+    Lewis, not just a bug. Session time is now capped per-session (a
+    flat, resetting clock — see conversation.models.Session's
+    SESSION_HARD_CAP_MINUTES and audio/consumers.py's periodic check),
+    not accumulated against this model at all.
+
+    `max_sessions`/`sessions_used` (the session-*count* cap) is
+    unchanged — still the only numeric cap this model tracks.
+
+    `is_active` is a separate on/off switch from the numeric cap —
     revoking access shouldn't require zeroing out (and losing) a user's
-    configured quota numbers.
+    configured quota number.
     """
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="quota")
 
     max_sessions = models.PositiveIntegerField(null=True, blank=True)
     sessions_used = models.PositiveIntegerField(default=0)
-
-    max_minutes = models.PositiveIntegerField(null=True, blank=True)
-    minutes_used = models.FloatField(default=0)
 
     is_active = models.BooleanField(default=True)
 
@@ -151,67 +155,65 @@ class TenantQuota(models.Model):
             return None
         return max(0, self.max_sessions - self.sessions_used)
 
-    def minutes_remaining(self):
-        if self.max_minutes is None:
-            return None
-        return max(0, self.max_minutes - self.minutes_used)
-
     def sessions_exhausted(self) -> bool:
         return self.max_sessions is not None and self.sessions_used >= self.max_sessions
-
-    def minutes_exhausted(self) -> bool:
-        return self.max_minutes is not None and self.minutes_used >= self.max_minutes
 
     def can_start_session(self) -> tuple[bool, str | None]:
         """
         Returns (allowed, reason). reason is None when allowed=True, else
-        one of "account_inactive" / "sessions_exhausted" /
-        "minutes_exhausted" — kept as stable string codes so callers
-        (REST view, WS consumer, eventually the Flutter client) can branch
-        on the reason rather than parsing a human sentence.
+        one of "account_inactive" / "sessions_exhausted" — kept as
+        stable string codes so callers (REST view, WS consumer,
+        eventually the Flutter client) can branch on the reason rather
+        than parsing a human sentence.
+
+        Session-cap fix (2026-09-01): "minutes_exhausted" is gone along
+        with the minutes pool it referred to — per-session time is now
+        enforced by a hard 2-hour ceiling on the session itself (see
+        Session.is_past_hard_cap), not by anything checked here at
+        session-start time.
         """
         if not self.is_active:
             return False, "account_inactive"
         if self.sessions_exhausted():
             return False, "sessions_exhausted"
-        if self.minutes_exhausted():
-            return False, "minutes_exhausted"
         return True, None
 
     def register_usage(self, *, minutes: float, session=None, note: str = ""):
         """
-        Record consumption of one completed session: bump both counters
-        and write an audit row. Called once, at session end, from
-        conversation/usage.py:finalize_session_usage — never from the
-        WS consumer directly, so REST-triggered ends (session_end_view)
-        and WS-triggered ends both go through the same accounting path.
+        Record consumption of one completed session: bump the session
+        counter and write an audit row. Called once, at session end,
+        from conversation/usage.py:finalize_session_usage — never from
+        the WS consumer directly, so REST-triggered ends
+        (session_end_view) and WS-triggered ends both go through the
+        same accounting path.
+
+        Session-cap fix (2026-09-01): `minutes` is still accepted (and
+        still recorded on the UsageEvent audit row below, for the admin
+        usage timeline) but no longer summed into any cap on this model
+        — there is no minutes pool left to add it to.
         """
         self.sessions_used = models.F("sessions_used") + 1
-        self.minutes_used = models.F("minutes_used") + max(0.0, minutes)
-        self.save(update_fields=["sessions_used", "minutes_used", "updated_at"])
-        self.refresh_from_db(fields=["sessions_used", "minutes_used"])
+        self.save(update_fields=["sessions_used", "updated_at"])
+        self.refresh_from_db(fields=["sessions_used"])
         UsageEvent.objects.create(user=self.user, session=session, minutes=minutes, note=note)
 
-    def adjust(self, *, sessions_delta: int = 0, minutes_delta: int = 0, note: str = ""):
+    def adjust(self, *, sessions_delta: int = 0, note: str = ""):
         """
-        Admin-panel entry point for "+N sessions" / "+N minutes" (or
-        negative to claw back). Adjusts the *max*, not *used* — adding
-        quota should mean "you can now do more," not silently rewinding
-        usage history. Logged as a UsageEvent with session=None so the
-        admin UI's usage timeline shows manual grants alongside real
-        consumption.
+        Admin-panel entry point for "+N sessions" (or negative to claw
+        back). Adjusts the *max*, not *used* — adding quota should mean
+        "you can now do more," not silently rewinding usage history.
+        Logged as a UsageEvent with session=None so the admin UI's usage
+        timeline shows manual grants alongside real consumption.
         """
         if sessions_delta:
             self.max_sessions = max(0, (self.max_sessions or 0) + sessions_delta)
-        if minutes_delta:
-            self.max_minutes = max(0, (self.max_minutes or 0) + minutes_delta)
-        self.save(update_fields=["max_sessions", "max_minutes", "updated_at"])
-        if sessions_delta or minutes_delta:
+        self.save(update_fields=["max_sessions", "updated_at"])
+        if sessions_delta:
             UsageEvent.objects.create(
                 user=self.user,
                 session=None,
                 minutes=0,
-                note=note or f"admin adjustment: sessions{sessions_delta:+d}, minutes{minutes_delta:+d}",
+                note=note or f"admin adjustment: sessions{sessions_delta:+d}",
             )
 
 

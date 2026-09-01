@@ -6,6 +6,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../audio/capture.dart';
 import '../auth/auth_store.dart';
 import '../theme.dart';
+import '../tour/tour_controller.dart';
+import '../tour/tour_overlay.dart';
 import '../widgets/paced_code_reveal.dart';
 import '../ws/socket.dart';
 
@@ -23,7 +25,18 @@ import '../ws/socket.dart';
 /// sheet,
 /// ring pulse animation) are new.
 class LiveSessionScreen extends StatefulWidget {
-  const LiveSessionScreen({super.key});
+  const LiveSessionScreen({super.key, this.tour, this.micKey});
+
+  // Full-app hint system (2026-08-31, build plan §16): the SAME
+  // TourController instance AppShell owns, passed down through the
+  // pushed route rather than this screen creating its own — a pushed
+  // route isn't part of AppShell's IndexedStack, so it can't reach the
+  // controller via a shared ancestor the way Home/History/Settings do;
+  // explicit constructor passing is the simplest correct alternative.
+  // Both null on a normal (non-tour) session start — see main.dart's
+  // AppShell._startSession for the one call site that passes them.
+  final TourController? tour;
+  final GlobalKey? micKey;
 
   @override
   State<LiveSessionScreen> createState() => _LiveSessionScreenState();
@@ -170,6 +183,25 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
   bool _connected = false;
   bool _recording = false;
   String _status = 'Not connected.';
+
+  // Session-cap fix (2026-09-01): whether the CURRENT connection is a
+  // bonus grace round (server-confirmed via session_started's is_bonus
+  // field, not just "the user tapped the bonus button" — the ack is
+  // what actually matters for anything gating UI on it) rather than a
+  // normal billable session. Reset on every fresh _connect() the same
+  // way _sessionId is.
+  bool _isBonus = false;
+  // Set when _connect() was invoked specifically to start the bonus
+  // round the user just accepted from the end-of-session dialog — read
+  // once in _connect() to decide whether to add ?bonus=1, then not
+  // needed again until the next bonus request.
+  bool _startAsBonus = false;
+  // Session-cap fix (2026-09-01): true from the 1h30m session_cap_warning
+  // message until the session ends one way or another. Drives a small
+  // persistent banner (see build()) rather than a one-off SnackBar —
+  // a warning about a hard cut coming in 30 minutes is worth staying
+  // visible, not flashing past.
+  bool _capWarningActive = false;
 
   // Phase 4: defaults to Medium, matching ai/prompts.py's
   // DEFAULT_ANSWER_LEVEL — stays in sync with the server without needing
@@ -324,7 +356,14 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
       if (token != null) 'token': token,
       'title': _titleController.text.trim(),
       'mode': _sessionMode.wireValue,
+      // Session-cap fix (2026-09-01): set only when this _connect() call
+      // is starting the bonus round the user just accepted (see
+      // _startBonusSession) — never carried over from a previous
+      // connection, since _startAsBonus is consumed (reset to false)
+      // right below before the connect attempt itself.
+      if (_startAsBonus) 'bonus': '1',
     }).toString();
+    _startAsBonus = false;
 
     // Bug fix (2026-08-25, Danstan's real-device report): _msgSub/_errSub/
     // _doneSub used to be assigned here unconditionally, every time
@@ -393,7 +432,13 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
       case 'session_started':
         setState(() {
           _sessionId = data['session_id'] as String?;
-          _status = 'Session: $_sessionId';
+          // Session-cap fix (2026-09-01): server-confirmed, not just
+          // "did we ask for bonus" — see _isBonus's docstring.
+          _isBonus = data['is_bonus'] as bool? ?? false;
+          _capWarningActive = false;
+          _status = _isBonus
+              ? 'Bonus session: $_sessionId'
+              : 'Session: $_sessionId';
           // A fresh WS connection means a fresh (or resumed-empty, from the
           // server's point of view) transcript stream — don't carry stale
           // text over from a previous connect/disconnect cycle in this
@@ -458,7 +503,29 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
         _scrollToEnd();
         break;
       case 'session_ended':
-        setState(() => _status = 'Session $_sessionId ended.');
+        setState(() {
+          _capWarningActive = false;
+          _status = 'Session $_sessionId ended.';
+        });
+        break;
+      case 'session_cap_warning':
+        // Session-cap fix (2026-09-01): 1h30m mark on a normal session
+        // (never sent for a bonus round — see Session.should_warn).
+        // Persistent banner rather than a SnackBar, set via
+        // _capWarningActive and rendered in build() — see that field's
+        // docstring for why.
+        setState(() => _capWarningActive = true);
+        break;
+      case 'bonus_offer':
+        // Session-cap fix (2026-09-01): sent right after session_ended
+        // (either reason: hard_cap_reached or user_ended), never for a
+        // bonus session ending itself (server-side guard). Show the
+        // choice as an explicit dialog — never auto-start the bonus
+        // round — per the spec's "offered explicitly, not automatic."
+        _showBonusOfferDialog(
+          bonusMinutes: (data['bonus_minutes'] as num?)?.toInt() ?? 15,
+          note: data['note'] as String? ?? '',
+        );
         break;
       case 'error':
         // Multi-tenancy retrofit (2026-08-30): audio/consumers.py's
@@ -470,6 +537,7 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
         // nothing to someone who isn't reading the server code.
         setState(() {
           _connected = false;
+          _capWarningActive = false;
           _status = _describeErrorReason(data['reason'] as String?);
         });
         break;
@@ -518,6 +586,61 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
     _socket.sendEndSession();
   }
 
+  /// Session-cap fix (2026-09-01): the explicit choice required by the
+  /// spec — "the app must explicitly tell the user: the session has
+  /// ended, here's what the bonus is, here's the difference between the
+  /// bonus and a real session, and let them choose to take it or just
+  /// end." Shown after the socket has already closed (session_ended and
+  /// bonus_offer both arrive right before the server closes the
+  /// connection), so this dialog's only job is presenting the choice —
+  /// _startBonusSession below handles actually reconnecting.
+  Future<void> _showBonusOfferDialog({
+    required int bonusMinutes,
+    required String note,
+  }) async {
+    if (!mounted) return;
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: CopilotColors.panel,
+        title: const Text(
+          'Session ended',
+          style: TextStyle(color: CopilotColors.paper),
+        ),
+        content: Text(
+          'Your session has ended.\n\n'
+          'You can start a $bonusMinutes-minute bonus round for extra '
+          'familiarization or tutorial use. $note\n\n'
+          'This bonus is separate from your regular sessions and does not '
+          'count against them.',
+          style: const TextStyle(color: CopilotColors.mist, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('No thanks'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text('Start $bonusMinutes-minute bonus'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true) {
+      await _startBonusSession();
+    }
+  }
+
+  /// Reconnects with ?bonus=1 — a fresh Session row, server-flagged
+  /// is_bonus, never resuming the session that just ended (see
+  /// audio/consumers.py connect()'s note on why bonus never resumes).
+  Future<void> _startBonusSession() async {
+    _startAsBonus = true;
+    await _connect();
+  }
+
   Future<void> _disconnect() async {
     if (_recording) await _mic.stop();
     await _socket.disconnect();
@@ -539,6 +662,14 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
   }
 
   void _toggleMic() {
+    // Full-app hint system (2026-08-31, build plan §16): the tour's
+    // "try starting a session" task is satisfied by the tap itself —
+    // opening the session-onboarding sheet below IS the real action a
+    // user takes to start a session, not something to wait past. A
+    // no-op via TourController.completeCurrentTask's own id check
+    // outside a live tour (widget.tour == null, or the tour isn't
+    // currently sitting on this exact step).
+    widget.tour?.completeCurrentTask('live_session.mic');
     if (!_connected) {
       _showSessionOnboardingSheet();
       return;
@@ -669,7 +800,7 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    final scaffold = Scaffold(
       backgroundColor: CopilotColors.ink,
       body: SafeArea(
         child: Column(
@@ -681,6 +812,20 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
               answerLevel: _answerLevel,
               onLevelChanged: _setAnswerLevel,
             ),
+            // Session-cap fix (2026-09-01): persistent banner from the
+            // 1h30m session_cap_warning message until the session ends
+            // — see _capWarningActive's docstring for why this is a
+            // banner and not a one-off SnackBar.
+            if (_capWarningActive)
+              Container(
+                width: double.infinity,
+                color: CopilotColors.amber.withOpacity(0.15),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: const Text(
+                  '30 minutes left in this session — it will end automatically at the 2-hour mark.',
+                  style: TextStyle(color: CopilotColors.amber, fontSize: 12),
+                ),
+              ),
             Expanded(
               child: DefaultTabController(
                 length: 2,
@@ -725,6 +870,7 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
               connected: _connected,
               recording: _recording,
               ringController: _ringController,
+              micKey: widget.micKey,
               onMicTap: _toggleMic,
               onEndSession: _connected ? _endSession : null,
               onDisconnect: _connected ? () => _disconnect() : null,
@@ -732,6 +878,18 @@ class _LiveSessionScreenState extends State<LiveSessionScreen>
           ],
         ),
       ),
+    );
+
+    final tour = widget.tour;
+    if (tour == null) return scaffold;
+    // Full-app hint system (2026-08-31, build plan §16): wrapped only
+    // when a tour is actually in progress (AppShell passes null on a
+    // normal, non-tour session start — see LiveSessionScreen's doc
+    // comment) — an AnimatedBuilder here would be wasted rebuilds for
+    // every ordinary session otherwise.
+    return AnimatedBuilder(
+      animation: tour,
+      builder: (context, _) => TourOverlay(controller: tour, child: scaffold),
     );
   }
 }
@@ -1097,6 +1255,7 @@ class _Controls extends StatelessWidget {
     required this.onMicTap,
     required this.onEndSession,
     required this.onDisconnect,
+    this.micKey,
   });
 
   final bool connected;
@@ -1105,6 +1264,7 @@ class _Controls extends StatelessWidget {
   final VoidCallback onMicTap;
   final VoidCallback? onEndSession;
   final VoidCallback? onDisconnect;
+  final GlobalKey? micKey;
 
   @override
   Widget build(BuildContext context) {
@@ -1123,6 +1283,7 @@ class _Controls extends StatelessWidget {
           ),
           const SizedBox(width: 28),
           GestureDetector(
+            key: micKey,
             onTap: onMicTap,
             child: SizedBox(
               width: 84,
